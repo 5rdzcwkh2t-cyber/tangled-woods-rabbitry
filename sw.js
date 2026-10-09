@@ -1,0 +1,1 @@
+self.addEventListener('install',e=>e.waitUntil(caches.open('rabbitry-v1').then(c=>c.addAll(['./','./index.html','./seed.js','./manifest.webmanifest']))));self.addEventListener('fetch',e=>e.respondWith(fetch(e.request).catch(()=>caches.match(e.request))));
