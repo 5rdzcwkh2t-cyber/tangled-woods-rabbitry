@@ -30,4 +30,101 @@ function parseCSV(text){text=text.replace(/^\uFEFF/,'');let rows=[],row=[],field
 async function previewCSV(){pendingCSV=null;let f=el('importFile').files[0],box=el('importPreview');if(!f)return;try{if(f.size>15*1024*1024)throw Error('File exceeds 15 MB');let parsed=parseCSV(await f.text()),type=el('importType').value,required=type==='rabbits'?['Name','Father','Mother','Breed']:['Name','Father','Mother','Total Kits'];let missing=required.filter(h=>!parsed.headers.includes(h));if(missing.length)throw Error('This does not look like a '+type+' export. Missing: '+missing.join(', '));if(!parsed.records.length)throw Error('No records found');pendingCSV={type,records:parsed.records};box.innerHTML=`<p><strong>${parsed.records.length} records found</strong> · ${parsed.headers.length} columns</p><p>Columns: ${esc(parsed.headers.join(', '))}</p><p>Preview: ${esc([parsed.records[0].Prefix,parsed.records[0].Name].filter(Boolean).join(' '))}</p><button class="primary" onclick="commitCSV()">Replace ${type} records with this CSV</button>`;}catch(err){box.textContent='Could not preview CSV: '+err.message;}}
 function commitCSV(){if(!pendingCSV)return;let {type,records}=pendingCSV;if(!confirm('Replace all '+db[type].length+' existing '+type+' records on THIS DEVICE with '+records.length+' imported records? Download a backup first.'))return;let previous=db[type];db[type]=records.map((r,i)=>({...r,_id:type[0]+'-import-'+i}));try{save();pendingCSV=null;alert('Imported '+records.length+' '+type+' records on this device. Download a JSON backup now.');nav('Home')}catch(err){db[type]=previous;alert('Could not save import. Device storage may be full: '+err.message)}}
 function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date().toISOString()},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='tangled-woods-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000)}async function restore(e){let f=e.target.files[0];if(!f)return;try{let data=JSON.parse(await f.text());if(!Array.isArray(data.rabbits)||!Array.isArray(data.litters))throw Error('Invalid backup');if(confirm('Replace all current local data with this backup?')){db={rabbits:data.rabbits,litters:data.litters,breedings:Array.isArray(data.breedings)?data.breedings:[]};save();nav('Home')}}catch(err){alert('Could not read backup: '+err.message)}}if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});render();
+</script><script>
+/* Tangled Woods Rabbitry Manager v3.4 backup/restore enhancement.
+   Load AFTER the existing inline application script. */
+(() => {
+  'use strict';
+  const MAX_BYTES = 25 * 1024 * 1024;
+  let candidate = null;
+  const originalRender = render;
+  function showBackup() {
+    const view = document.getElementById('view');
+    if (!view || page !== 'Backup') return;
+    view.innerHTML = `<h2>Data & backups</h2>
+      <div class="card"><h3>Download a backup</h3>
+      <p>Save a complete JSON backup in Files or iCloud Drive. Keep a copy before importing or restoring.</p>
+      <button class="primary" type="button" onclick="backup()">Download backup</button></div>
+      <div class="card"><h3>Restore a backup</h3>
+      <p>Choose a previously saved Tangled Woods JSON backup. You can review the record counts before replacing anything.</p>
+      <button class="primary" id="twChooseBackup" type="button">Choose backup file</button>
+      <label for="twBackupFile" class="tw-file-label">Or tap here to browse Files
+        <input id="twBackupFile" type="file" accept=".json,application/json" style="display:block;width:100%;font-size:16px;margin-top:10px" aria-describedby="twRestoreStatus">
+      </label>
+      <p class="muted" id="twRestoreStatus" role="status" aria-live="polite">No file selected.</p>
+      <div id="twRestorePreview"></div></div>
+      <div class="card"><h3>Important</h3>
+      <p>This app stores records in this browser, not in GitHub. Clearing Safari website data may erase records. Devices do not automatically sync.</p>
+      <p class="muted">Restoring replaces the current rabbits, litters, breeding history, and manual pedigree links on this device.</p></div>`;
+    const input = document.getElementById('twBackupFile');
+    document.getElementById('twChooseBackup').addEventListener('click', () => {
+      const status = document.getElementById('twRestoreStatus');
+      status.textContent = 'Opening file picker… If nothing appears, tap “Or tap here to browse Files” below.';
+      try { input.click(); } catch (err) { status.textContent = 'File picker could not open: ' + err.message; }
+    });
+    input.addEventListener('change', previewBackup);
+  }
+  render = function () { originalRender(); if (page === 'Backup') showBackup(); };
+  function checkRecords(value, label) {
+    if (!Array.isArray(value) || value.some(x => !x || typeof x !== 'object' || Array.isArray(x))) {
+      throw new Error(label + ' must be an array of records.');
+    }
+  }
+  async function previewBackup(event) {
+    candidate = null;
+    const status = document.getElementById('twRestoreStatus');
+    const preview = document.getElementById('twRestorePreview');
+    preview.replaceChildren();
+    const file = event.target.files && event.target.files[0];
+    if (!file) { status.textContent = 'No file selected. Tap the file field to try again.'; return; }
+    status.textContent = 'Reading ' + file.name + '…';
+    try {
+      if (file.size > MAX_BYTES) throw new Error('Backup exceeds 25 MB.');
+      const data = JSON.parse(await file.text());
+      if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Not a backup object.');
+      checkRecords(data.rabbits, 'Rabbits');
+      checkRecords(data.litters, 'Litters');
+      if (data.breedings !== undefined) checkRecords(data.breedings, 'Breedings');
+      if (data.parentLinks !== undefined && (!data.parentLinks || typeof data.parentLinks !== 'object' || Array.isArray(data.parentLinks))) {
+        throw new Error('Parent links are invalid.');
+      }
+      const safe = {rabbits:data.rabbits, litters:data.litters,
+        breedings:data.breedings || [], parentLinks:data.parentLinks || {}};
+      candidate = safe;
+      status.textContent = 'Backup selected: ' + file.name;
+      const title = document.createElement('h3'); title.textContent = 'Backup preview';
+      const counts = document.createElement('p');
+      counts.textContent = `${safe.rabbits.length} rabbits · ${safe.litters.length} litters · ${safe.breedings.length} breedings · ${Object.keys(safe.parentLinks).length} manual pedigree links`;
+      const note = document.createElement('p'); note.className = 'muted';
+      note.textContent = 'These will replace the records currently stored in Safari. Download a backup of your current records first.';
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'primary';
+      button.textContent = 'Restore this backup'; button.addEventListener('click', commitBackup);
+      preview.append(title, counts, note, button);
+    } catch (err) {
+      status.textContent = 'Could not read backup: ' + err.message;
+      event.target.value = '';
+    }
+  }
+  function commitBackup() {
+    if (!candidate) return;
+    if (!confirm(`Replace the current ${db.rabbits.length} rabbits and ${db.litters.length} litters with ${candidate.rabbits.length} rabbits and ${candidate.litters.length} litters? This cannot be undone without another backup.`)) return;
+    const previous = db;
+    try {
+      localStorage.setItem(KEY, JSON.stringify(candidate));
+      db = candidate;
+      candidate = null;
+      nav('Home');
+      alert('Backup restored successfully.');
+    } catch (err) {
+      db = previous;
+      alert('Restore failed; existing records were kept. ' + err.message);
+    }
+  }
+  // Replace the legacy restore handler too, so it cannot bypass preview/validation.
+  restore = function () { nav('Backup'); };
+  const footer = document.querySelector('footer');
+  if (footer) footer.textContent = 'Version 3.4 · Local records · No automatic sync';
+  render();
+})();
+
 </script></body></html>

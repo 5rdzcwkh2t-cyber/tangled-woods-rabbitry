@@ -1,3 +1,4 @@
-Tangled Woods Rabbitry Manager v3.3
-Upload index.html, seed.js, sw.js, manifest.webmanifest, icon-192.png, icon-512.png and tangled-woods-logo.jpg to repository root.
-Export a JSON backup before upgrading. Parent corrections are stored in parentLinks and included in JSON backups. No cloud sync.
+Tangled Woods Rabbitry Manager v3.4
+Upload all files except README.txt to your existing GitHub Pages repository root, replacing index.html.
+Do not clear Safari website data. Save your existing backup.
+The backup page has an iPad-friendly file picker, preview and confirmation.
