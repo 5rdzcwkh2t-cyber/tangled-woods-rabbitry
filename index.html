@@ -253,4 +253,25 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
 }
 </style>
 <script>document.querySelector('footer').textContent='Version 3.6.3 · Local records · No automatic sync';</script>
+<style id="tw-v364-signature-flow">
+/* Keep original certification in normal print flow on five-generation pages. */
+@media print {
+ body:has(.tw-ped-tree[data-gens="5"]) .tw-ped-print .tw-ped-sign {
+   position: static !important;
+   display: block !important;
+   visibility: visible !important;
+   margin: 6px 0 0 !important;
+   padding: 3px 0 !important;
+   font-size: 10px !important;
+   line-height: 1.25 !important;
+   white-space: normal !important;
+   break-inside: avoid !important;
+   page-break-inside: avoid !important;
+ }
+ body:has(.tw-ped-tree[data-gens="5"]) .tw-ped-tree[data-gens="5"] {
+   height: 3.65in !important;
+ }
+}
+</style>
+<script>document.querySelector('footer').textContent='Version 3.6.4 · Local records · No automatic sync';</script>
 </body></html>
