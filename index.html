@@ -154,4 +154,42 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
  window.pedGens=3;
  const f=document.querySelector('footer');if(f)f.textContent='Version 3.5 · Local records · No automatic sync';
 })();
+</script><style id="tw-v36-print">
+/* v3.6: Letter landscape, both generation views */
+.tw-ped-print{width:100%;max-width:100%;}
+.tw-ped-print .tw-ped-cell{justify-content:center;align-items:flex-start;}
+.tw-ped-print .tw-ped-cell strong{font-size:clamp(11px,1.3vw,15px);line-height:1.25;}
+.tw-ped-print .tw-ped-cell small{font-size:clamp(9px,1vw,12px);line-height:1.3;margin-top:3px;}
+.tw-ped-tree[data-gens="3"]{height:330px;}
+.tw-ped-tree[data-gens="5"]{height:520px;}
+.tw-ped-print .tw-photo{width:135px;height:135px;object-fit:cover;}
+.tw-ped-print .tw-ped-head .pedigree-brand{min-width:0;}
+.tw-ped-print .tw-ped-sign{margin-top:14px;display:block;line-height:1.5;}
+@media print {
+ @page {size:11in 8.5in;margin:.32in;}
+ html,body{margin:0!important;padding:0!important;width:auto!important;height:auto!important;}
+ main{padding:0!important;margin:0!important;max-width:none!important;}
+ .tw-ped-print{width:100%!important;max-width:none!important;break-inside:avoid;page-break-inside:avoid;}
+ .tw-ped-print .card{padding:2px 0!important;margin:0 0 5px!important;}
+ .tw-ped-print .tw-ped-head{gap:12px;min-height:1.1in;}
+ .tw-ped-print .pedigree-brand img{width:.78in!important;height:.78in!important;}
+ .tw-ped-print .pedigree-brand strong{font-size:17px!important;line-height:1.15;}
+ .tw-ped-print .tw-photo{width:1.05in!important;height:1.05in!important;border-radius:5px;}
+ .tw-ped-print .card p{font-size:13px!important;margin:4px 0!important;}
+ .tw-ped-print .tw-ped-labels{font-size:11px!important;margin:5px 0 3px!important;}
+ .tw-ped-print .tw-ped-tree{gap:5px!important;}
+ .tw-ped-print .tw-ped-col{gap:3px!important;}
+ .tw-ped-print .tw-ped-cell{padding:7px!important;justify-content:center!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="3"]{height:3.55in!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="3"] .tw-ped-cell strong{font-size:13px!important;line-height:1.2!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="3"] .tw-ped-cell small{font-size:10px!important;line-height:1.2!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"]{height:5.1in!important;gap:3px!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"] .tw-ped-cell{padding:3px!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"] .tw-ped-cell strong{font-size:8px!important;line-height:1.07!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"] .tw-ped-cell small{font-size:6.5px!important;line-height:1.05!important;margin-top:1px!important;}
+ .tw-ped-print .tw-ped-sign{font-size:11px!important;margin-top:12px!important;white-space:normal;}
+}
+</style><script>
+/* Version 3.6 retains the v3.5 data model and photo storage. */
+(function(){const f=document.querySelector('footer');if(f)f.textContent='Version 3.6 · Local records · No automatic sync';})();
 </script></body></html>
