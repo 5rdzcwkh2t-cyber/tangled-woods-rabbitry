@@ -1,0 +1,28 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Tangled Woods — Cloud Read-Only Test</title><style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#263b32;background:#f6f5f0}body{max-width:720px;margin:35px auto;padding:0 18px}h1{color:#315d4b}section{background:white;border:1px solid #dce6dc;border-radius:14px;padding:18px;margin:16px 0}button{border:0;background:#315d4b;color:white;padding:12px 18px;border-radius:10px;font:inherit;cursor:pointer}button:disabled{opacity:.6}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f6f3;padding:12px;border-radius:8px}small{color:#5b6b60}</style></head><body>
+<h1>Tangled Woods Rabbitry</h1><p><strong>Cloud connection test — read only</strong></p><section><p>This page only requests rabbit and litter records from your Cloudflare Worker. It does not save, upload, edit, or delete records, and it does not access your original app's browser storage or photos.</p><button id="test">Test cloud connection</button><p id="status" role="status" aria-live="polite">Ready to test.</p><pre id="results">No requests sent.</pre></section><section><small>Expected database totals: 730 rabbits and 288 litters. A login redirect or browser cross-origin error means authentication or CORS needs configuring before we can connect the full app. It does not mean records were lost.</small></section>
+<script>
+'use strict';
+const base='https://tangled-woods-api.mnelson2020.workers.dev';
+const button=document.getElementById('test'),status=document.getElementById('status'),out=document.getElementById('results');
+async function read(endpoint,field){
+ const response=await fetch(base+endpoint,{method:'GET',credentials:'include',headers:{Accept:'application/json'},cache:'no-store'});
+ if(!response.ok)throw new Error(endpoint+' returned HTTP '+response.status);
+ const type=response.headers.get('content-type')||'';
+ if(!type.includes('application/json'))throw new Error(endpoint+' returned a login page or non-JSON response');
+ const data=await response.json();
+ if(!data||!Array.isArray(data[field]))throw new Error(endpoint+' did not return a '+field+' array');
+ return data[field].length;
+}
+button.addEventListener('click',async()=>{
+ button.disabled=true;status.textContent='Reading Cloudflare records…';out.textContent='';
+ try{
+  const rabbits=await read('/api/rabbits','rabbits');
+  const litters=await read('/api/litters','litters');
+  out.textContent=`Rabbit records: ${rabbits} (expected 730)\nLitter records: ${litters} (expected 288)`;
+  status.textContent=rabbits===730&&litters===288?'Success — both cloud record counts match.':'Connected, but counts differ. Do not sync until we investigate.';
+ }catch(e){status.textContent='Connection not completed.';out.textContent=String(e.message)+'\n\nIf the API opens in another tab but this test fails, Cloudflare Access or cross-origin permissions may need adjustment. Do not disable Access.'}
+ finally{button.disabled=false}
+});
+</script></body></html>
