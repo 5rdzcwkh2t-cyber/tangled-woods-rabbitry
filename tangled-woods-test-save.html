@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Tangled Woods — Test Database Save</title>
+<style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#263b32;background:#f6f5f0}body{margin:0}header{background:#315d4b;color:white;padding:22px}main{max-width:620px;margin:25px auto;padding:0 18px}.card{background:white;border:1px solid #d9e4da;border-radius:14px;padding:20px;margin:16px 0}label{display:block;font-weight:600;margin:14px 0 7px}input{box-sizing:border-box;width:100%;font:inherit;padding:12px;border:1px solid #aabfb0;border-radius:8px}button{background:#315d4b;color:white;border:0;border-radius:9px;padding:12px 18px;font:inherit;cursor:pointer;margin-top:16px}button:disabled{opacity:.55;cursor:wait}pre{white-space:pre-wrap;overflow-wrap:anywhere;background:#f3f5f3;padding:14px;border-radius:8px}small{color:#53695b}.error{color:#9b2226}.success{color:#216e41}
+</style>
+</head>
+<body>
+<header><strong>TANGLED WOODS</strong><h1>Test database save</h1></header>
+<main>
+<div class="card"><strong>Preview environment only</strong><p>This page tests saving the existing rabbit <code>TEST-001</code> to the isolated Cloudflare test database. It does not use localStorage or change production records.</p><p><small>Open this page from the Cloudflare <code>cloud-development</code> preview site, not from your computer or GitHub Pages.</small></p></div>
+<div class="card">
+<label for="rabbitName">Test rabbit name</label>
+<input id="rabbitName" value="Cloud Save Test - Updated" maxlength="100" required>
+<button id="saveButton" type="button">Save TEST-001 to test database</button>
+<p id="status" role="status" aria-live="polite">No save attempted yet.</p>
+<pre id="result" hidden></pre>
+</div>
+</main>
+<script>
+(() => {
+'use strict';
+const button=document.getElementById('saveButton');
+const status=document.getElementById('status');
+const output=document.getElementById('result');
+const input=document.getElementById('rabbitName');
+const expectedHost='cloud-development.tangled-woods-rabbitry.pages.dev';
+if(location.hostname!==expectedHost){
+  button.disabled=true;
+  status.className='error';
+  status.textContent='Safety stop: this test page must be opened at https://'+expectedHost+'/tangled-woods-test-save.html';
+  return;
+}
+button.addEventListener('click',async()=>{
+  const Name=input.value.trim();
+  if(!Name||Name.length>100){status.textContent='Enter a name between 1 and 100 characters.';return;}
+  button.disabled=true;status.className='';status.textContent='Sending test save…';output.hidden=true;
+  try{
+    const response=await fetch('/api/test-save-rabbit',{
+      method:'POST',credentials:'same-origin',cache:'no-store',
+      headers:{'Content-Type':'application/json','Accept':'application/json'},
+      body:JSON.stringify({_id:'TEST-001',Name})
+    });
+    const raw=await response.text();
+    let data;try{data=JSON.parse(raw)}catch{data={responsePreview:raw.slice(0,600)}}
+    output.textContent=JSON.stringify({httpStatus:response.status,body:data},null,2);
+    output.hidden=false;
+    const saved=response.ok&&data?.saved===true&&data?.rabbit?._id==='TEST-001'&&data.rabbit.Name===Name;
+    status.className=saved?'success':'error';
+    status.textContent=saved?'Test save succeeded. The server reports TEST-001 was updated.':'Test save not confirmed. See the response below; no further action was taken.';
+  }catch(err){status.className='error';status.textContent='Request failed: '+err.message;}
+  finally{button.disabled=false;}
+});
+})();
+</script>
+</body>
+</html>
