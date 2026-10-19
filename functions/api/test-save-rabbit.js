@@ -6,7 +6,7 @@ export async function onRequestPost({ request, env }) {
       headers: { "Cache-Control": "no-store" }
     });
 
-  // This endpoint must only work in our test environment.
+  // Never allow this test endpoint to run against production.
   if (env.TEST_DATABASE !== "tangled-woods-test-db") {
     return reply({ error: "Test environment not configured" }, 403);
   }
@@ -32,15 +32,14 @@ export async function onRequestPost({ request, env }) {
     }
 
     const body = await request.json();
+    const keys = ["Name", "Sex", "Breed", "Status"];
 
-    if (
-      !body ||
-      body._id !== "TEST-001" ||
-      typeof body.Name !== "string" ||
-      body.Name.trim().length < 1 ||
-      body.Name.length > 100
-    ) {
-      return reply({ error: "Invalid test rabbit" }, 400);
+    if (!body || body._id !== "TEST-001" ||
+        !body.expected || typeof body.expected !== "object" ||
+        keys.some(key => typeof body[key] !== "string" ||
+          body[key].length > 100 ||
+          (key === "Name" && !body[key].trim()))) {
+      return reply({ error: "Invalid test rabbit fields" }, 400);
     }
 
     const existing = await env.DB.prepare(
@@ -51,7 +50,6 @@ export async function onRequestPost({ request, env }) {
       return reply({ error: "Test rabbit not found" }, 404);
     }
 
-    // Keep every existing field, changing only the name.
     let stored;
     try {
       stored = JSON.parse(existing.data);
@@ -59,25 +57,25 @@ export async function onRequestPost({ request, env }) {
       return reply({ error: "Stored rabbit data is invalid" }, 409);
     }
 
-    if (
-      !stored ||
-      typeof stored !== "object" ||
-      Array.isArray(stored) ||
-      stored._id !== "TEST-001"
-    ) {
+    if (!stored || typeof stored !== "object" ||
+        Array.isArray(stored) || stored._id !== "TEST-001") {
       return reply({ error: "Stored test rabbit ID mismatch" }, 409);
     }
 
-    if (
-      typeof body.expectedName === "string" &&
-      body.expectedName !== stored.Name
-    ) {
+    // Prevent overwriting changes made by another session.
+    if (keys.some(key =>
+        typeof body.expected[key] !== "string" ||
+        body.expected[key] !== (stored[key] || ""))) {
       return reply({
         error: "Rabbit changed since you opened it. Reload before saving."
       }, 409);
     }
 
-    const rabbit = { ...stored, Name: body.Name.trim() };
+    // Preserve all other existing rabbit fields.
+    const rabbit = { ...stored };
+    for (const key of keys) {
+      rabbit[key] = body[key].trim();
+    }
 
     const updated = await env.DB.prepare(
       "UPDATE rabbits SET name = ?, data = ? WHERE id = ? AND data = ?"
@@ -95,8 +93,8 @@ export async function onRequestPost({ request, env }) {
     }
 
     return reply({ saved: true, rabbit });
-
   } catch (error) {
+    console.error("Test save failed", error);
     return reply({ error: "Unable to save test rabbit" }, 500);
   }
 }
