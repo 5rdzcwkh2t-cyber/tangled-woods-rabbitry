@@ -495,4 +495,155 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
  }
 })();
 </script>
+
+<script>
+/* Four-field TEST-001 editor — isolated cloud test only. */
+(function () {
+  'use strict';
+
+  const fields = ['Name', 'Sex', 'Breed', 'Status'];
+  const previousDetail = detail;
+
+  detail = function (type, index) {
+    const result = previousDetail(type, index);
+
+    // The original detail function must have displayed TEST-001.
+    if (type !== 'rabbits') return result;
+
+    const rabbit = db.rabbits[index];
+    if (!rabbit || rabbit._id !== 'TEST-001') return result;
+
+    // Only activate inside the existing cloud test workspace.
+    const oldPanel = document.querySelector('.tw-cloud-app-banner h3');
+    if (!oldPanel || oldPanel.textContent !==
+        'Edit TEST-001 (test database only)') return result;
+
+    const panel = oldPanel.parentElement;
+    const oldButton = [...panel.querySelectorAll('button')]
+      .find(b => b.textContent === 'Save test rabbit');
+
+    if (!oldButton) return result;
+
+    // Disable the old name-only save handler.
+    oldButton.remove();
+
+    const oldName = panel.querySelector('#twTestName');
+    if (oldName) oldName.closest('label')?.remove();
+    if (oldName) oldName.remove();
+
+    const form = document.createElement('form');
+    form.id = 'twFourFieldForm';
+
+    const expected = {};
+    const inputs = {};
+
+    for (const key of fields) {
+      expected[key] = String(rabbit[key] ?? '');
+
+      const label = document.createElement('label');
+      label.textContent = key;
+
+      const input = document.createElement('input');
+      input.type = 'text';
+      input.name = key;
+      input.maxLength = 100;
+      input.value = expected[key];
+      if (key === 'Name') input.required = true;
+
+      label.append(input);
+      form.append(label);
+      inputs[key] = input;
+    }
+
+    const saveButton = document.createElement('button');
+    saveButton.type = 'submit';
+    saveButton.className = 'primary';
+    saveButton.textContent = 'Save four fields';
+    form.append(saveButton);
+
+    const status = document.createElement('p');
+    status.setAttribute('role', 'status');
+    form.append(status);
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+
+      const changes = {};
+      for (const key of fields) {
+        changes[key] = inputs[key].value.trim();
+      }
+
+      if (!changes.Name) {
+        status.textContent = 'Rabbit name is required.';
+        return;
+      }
+
+      if (!confirm('Save Name, Sex, Breed, and Status for TEST-001 in the isolated test database?')) {
+        return;
+      }
+
+      saveButton.disabled = true;
+      status.textContent = 'Saving to test database…';
+
+      try {
+        const response = await fetch('/api/test-save-rabbit', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json'
+          },
+          body: JSON.stringify({
+            _id: 'TEST-001',
+            ...changes,
+            expected
+          })
+        });
+
+        const result = await response.json();
+
+        if (!response.ok || result.saved !== true ||
+            result.rabbit?._id !== 'TEST-001') {
+          throw new Error(result.error || 'Save was not confirmed.');
+        }
+
+        const check = await fetch('/api/rabbits', {
+          credentials: 'same-origin',
+          cache: 'no-store',
+          headers: { Accept: 'application/json' }
+        });
+
+        if (!check.ok) {
+          throw new Error('Save succeeded, but verification failed.');
+        }
+
+        const data = await check.json();
+        const verified = data.rabbits?.find(r => r._id === 'TEST-001');
+
+        if (!verified || fields.some(key =>
+            String(verified[key] ?? '') !== changes[key])) {
+          throw new Error('Saved data did not match verification.');
+        }
+
+        db.rabbits[index] = verified;
+
+        for (const key of fields) {
+          expected[key] = String(verified[key] ?? '');
+          inputs[key].value = expected[key];
+        }
+
+        status.textContent =
+          'Saved and verified all four fields in the test database.';
+      } catch (error) {
+        status.textContent = 'Save issue: ' + error.message;
+      } finally {
+        saveButton.disabled = false;
+      }
+    });
+
+    panel.append(form);
+    return result;
+  };
+})();
+</script>
 </body></html>
