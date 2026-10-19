@@ -1,0 +1,498 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover"><meta name="theme-color" content="#315d4b"><link rel="manifest" href="manifest.webmanifest"><link rel="apple-touch-icon" href="icon-192.png"><link rel="icon" type="image/png" href="icon-192.png"><title>Tangled Woods Rabbitry</title><style>
+:root{font-family:system-ui,-apple-system,sans-serif;color:#263b32;background:#f6f5f0}*{box-sizing:border-box}body{margin:0}header{background:#315d4b;color:white;padding:20px max(18px,env(safe-area-inset-left));}header h1{font-size:22px;margin:4px 0}header small{opacity:.8}main{max-width:900px;margin:auto;padding:18px 16px 90px}.tabs{display:flex;gap:8px;overflow:auto;padding:12px 0}.tabs button{white-space:nowrap}.tabs button.active{background:#315d4b;color:white}button,.btn{border:0;border-radius:12px;padding:11px 15px;background:#e5eae5;color:#263b32;font-size:15px;cursor:pointer}button.primary{background:#315d4b;color:white}.stats{display:grid;grid-template-columns:1fr 1fr;gap:12px}.card{background:white;border:1px solid #e5e9e3;border-radius:16px;padding:16px;margin:10px 0;box-shadow:0 2px 6px #00000005}.stat strong{display:block;font-size:28px;color:#315d4b}.muted{color:#6d7b73;font-size:13px}.row{display:flex;justify-content:space-between;align-items:center;gap:10px}.listitem{width:100%;text-align:left;background:white;border:1px solid #e1e6df;margin:5px 0;padding:14px;border-radius:12px}.listitem strong{display:block}input,select,textarea{width:100%;font:inherit;border:1px solid #cdd8cf;border-radius:10px;padding:12px;margin:5px 0 13px;background:white}label{display:block;font-size:13px;color:#53695b}h2{font-size:21px}h3{font-size:16px}.pill{background:#e8f1e9;border-radius:20px;padding:4px 8px;font-size:12px}.ped{display:grid;grid-template-columns:repeat(4,minmax(125px,1fr));gap:8px;overflow:auto}.ped .card{font-size:12px;padding:10px;min-width:125px}.ped .card strong{display:block}footer{position:fixed;bottom:0;left:0;right:0;background:white;border-top:1px solid #ddd;padding:8px;text-align:center;color:#667;font-size:12px}#view{min-height:55vh}@media(min-width:650px){.stats{grid-template-columns:repeat(4,1fr)}}@media print{header,.tabs,footer,button{display:none!important}main{max-width:none}.ped{overflow:visible}}
+
+.ped{display:flex;gap:10px;overflow-x:auto;align-items:stretch}.pedcol{flex:1;min-width:170px}.pednode{background:white;border:1px solid #dce6dc;border-radius:10px;padding:9px;margin:7px 0;min-height:48px;overflow-wrap:anywhere}.pednode strong{font-size:12px;display:block}.pednode small{font-size:10px;display:block;color:#66776a}.pednode.ambiguous{border-color:#d3a148}.pednode.unmatched{border-style:dashed}.pednode.unknown{opacity:.55}.stat{padding:12px;background:#f3f7f1;border-radius:12px}.stat strong{display:block;font-size:23px;color:#315d4b} @media print{.no-print{display:none!important}footer{display:none!important}body{background:white}.ped{overflow:visible;gap:4px}.pedcol{min-width:0}.pednode{padding:3px;margin:3px 0;min-height:0;break-inside:avoid}.pednode strong{font-size:8px}.pednode small{font-size:7px} .pedcol h3{font-size:10px}main{padding:0}.card{box-shadow:none}}
+
+header.brand-header{display:flex;align-items:center;gap:14px}.brand-logo{width:76px;height:76px;object-fit:cover;border-radius:50%;background:#f6f1e6;border:2px solid #e6d8b7;flex-shrink:0}.brand-header h1{margin:3px 0}.pedigree-brand{display:flex;align-items:center;gap:14px}.pedigree-brand img{width:94px;height:94px;object-fit:contain;border-radius:50%}@media print{header.brand-header{display:none!important}.pedigree-brand{break-inside:avoid}.pedigree-brand img{width:75px;height:75px}}
+</style></head><body><header class="brand-header"><img class="brand-logo" src="tangled-woods-logo.jpg" alt="Tangled Woods Rabbitry logo"><div><small>TANGLED WOODS</small><h1>Rabbitry Manager</h1><small>Private breeding & pedigree records</small></div></header><main><div class="tabs" id="tabs"></div><section id="view"></section></main><footer>Version 3.3 · Local records · No automatic sync</footer><script src="seed.js"></script><script>
+const KEY='tangledwoods-data-v2';let db;try{db=JSON.parse(localStorage.getItem(KEY))||structuredClone(SEED)}catch(e){db=structuredClone(SEED)};if(!Array.isArray(db.breedings))db.breedings=[];if(!db.parentLinks||typeof db.parentLinks!=='object')db.parentLinks={};let page='Home',query='',selected=null;const save=()=>localStorage.setItem(KEY,JSON.stringify(db));const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));const name=r=>[r.Prefix,r.Name].filter(Boolean).join(' ');const options=['Home','Rabbits','Litters','Breeding','Pedigrees','Import','Backup'];const el=id=>document.getElementById(id);function nav(p){page=p;selected=null;query='';render()}function render(){el('tabs').innerHTML=options.map(x=>`<button class="${page===x?'active':''}" onclick="nav('${x}')">${x}</button>`).join('');let v=el('view');if(page==='Home')v.innerHTML=`<h2>Welcome back</h2><div class="stats"><div class="card stat"><strong>${db.rabbits.length}</strong>Rabbit records</div><div class="card stat"><strong>${db.litters.length}</strong>Litters</div><div class="card stat"><strong>${db.rabbits.filter(x=>x.Sex?.toLowerCase()==='doe').length}</strong>Does</div><div class="card stat"><strong>${db.rabbits.filter(x=>x.Sex?.toLowerCase()==='buck').length}</strong>Bucks</div></div><div class="card"><h3>Quick actions</h3><button class="primary" onclick="nav('Rabbits')">Browse rabbits</button> <button onclick="nav('Breeding')">Breeding planner</button> <button onclick="nav('Litters')">View litters</button></div><div class="card"><h3>Migration status</h3><p>Import your Everbreed CSV files from the Import tab. Pedigree links are matched by name only where unambiguous. Unmatched ancestors need manual verification. Device syncing is not enabled.</p></div>`;
+if(page==='Breeding')breeding();if(page==='Rabbits')listing('rabbits');if(page==='Litters')listing('litters');if(page==='Pedigrees')v.innerHTML=`<h2>Pedigree viewer</h2><p class="muted">Choose a rabbit to view its parents and known ancestors. Names that cannot be matched remain as text.</p><input id="search" placeholder="Search rabbit name or tattoo" oninput="filterPed(this.value)"><div id="results"></div>`;if(page==='Pedigrees')filterPed('');if(page==='Import')v.innerHTML=`<h2>Import Everbreed CSV</h2><div class="card"><p>Choose an Everbreed <strong>Rabbits/Breeders</strong> or <strong>Litters</strong> CSV. The file is read on this device only; it is not uploaded to GitHub or a server.</p><label>Import type<select id="importType" onchange="if(el('importFile').files.length)previewCSV()"><option value="rabbits">Rabbits / Breeders</option><option value="litters">Litters</option></select></label><label>Choose CSV<input id="importFile" type="file" accept=".csv,text/csv" onchange="previewCSV()"></label><div id="importPreview" class="muted">Select a file to preview it before importing.</div></div><div class="card"><h3>Before importing</h3><p>Use Backup → Download backup first. Import replaces records of the selected type on this device; the other type remains unchanged. Existing edits in that category will be replaced.</p><p class="muted">No cloud syncing yet. Repeat import on another device if needed, or transfer a JSON backup.</p></div>`;
+if(page==='Backup')v.innerHTML=`<h2>Data & backups</h2><div class="card"><p>Export a complete JSON backup after edits. Store it somewhere safe, such as Files or iCloud Drive.</p><button class="primary" onclick="backup()">Download backup</button><h3>Restore backup</h3><input type="file" accept="application/json,.json" onchange="restore(event)"><p class="muted">Restoring replaces all current records on this device.</p></div><div class="card"><h3>Important</h3><p>This prototype saves data in this browser. Clearing website data may erase changes. iPhone and iPad do not sync yet.</p></div>`;}
+function listing(type){let isR=type==='rabbits';el('view').innerHTML=`<div class="row"><h2>${isR?'Rabbits':'Litters'}</h2><button class="primary" onclick="edit('${type}',-1)">+ Add</button></div><input id="search" placeholder="Search by name, breed, tattoo, parent..." value="${esc(query)}" oninput="filterList('${type}',this.value)"><div class="muted" id="count"></div><div id="results"></div>`;filterList(type,query)}function filterList(type,q){query=q;let a=db[type].map((x,i)=>({...x,__index:i})).filter(x=>Object.values(x).some(v=>String(v).toLowerCase().includes(q.toLowerCase())));el('count').textContent=`${a.length} matching records`;el('results').innerHTML=a.slice(0,100).map(x=>`<button class="listitem" onclick="detail('${type}',${x.__index})"><strong>${esc(name(x)||'Unnamed')}</strong><span class="muted">${esc(x.Breed||'')} · ${esc(type==='rabbits'?x.Tattoo||x.Sex:x.Born||x.Bred)} · ${esc(type==='rabbits'?x.Status:x['Total Kits']+' kits')}</span></button>`).join('')+(a.length>100?'<p class="muted">Showing first 100 results; narrow your search.</p>':'')}
+function detail(type,i){let x=db[type][i];selected={type,i};el('view').innerHTML=`<button onclick="render()">← Back</button><div class="card"><div class="row"><h2>${esc(name(x)||'Unnamed')}</h2><button onclick="edit('${type}',${i})">Edit</button></div>${Object.entries(x).filter(([k,v])=>!k.startsWith('_')&&v).map(([k,v])=>`<p><span class="muted">${esc(k)}:</span> ${esc(v)}</p>`).join('')}${type==='rabbits'?`<button class="primary" onclick="pedigree(${i})">View pedigree</button>`:''}</div>`}
+function edit(type,i){let x=i<0?{}:db[type][i];let keys=type==='rabbits'?['Prefix','Name','Sex','Tattoo','Breed','Color','DoB','Father','Mother','Weight','Status','Notes']:['Prefix','Name','Breed','Father','Mother','Bred','Born','Total Kits','Sold Kits','Died Kits','Notes'];el('view').innerHTML=`<button onclick="render()">← Cancel</button><h2>${i<0?'Add':'Edit'} ${type==='rabbits'?'rabbit':'litter'}</h2><form id="editform">${keys.map(k=>`<label>${esc(k)}${k==='Notes'?`<textarea name="${k}">${esc(x[k]||'')}</textarea>`:`<input name="${k}" value="${esc(x[k]||'')}">`}</label>`).join('')}<button class="primary" type="submit">Save record</button></form>`;el('editform').onsubmit=e=>{e.preventDefault();let data={...x};new FormData(e.target).forEach((v,k)=>data[k]=v);if(i<0){data._id=(type==='rabbits'?'r':'l')+Date.now();db[type].push(data)}else db[type][i]=data;try{save();nav(type==='rabbits'?'Rabbits':'Litters')}catch(err){alert('Storage is full. Export a backup and use a hosted database.')}}}
+function cleanParent(s){let t=String(s||'').trim();if(t.startsWith('[')){try{let a=JSON.parse(t);if(Array.isArray(a))t=a.join(' ')}catch(e){}}return t.replace(/\s*\([^)]*\)\s*$/,'').trim()}
+function rabbitKey(r){return String(r._id||'')}function normParent(v){return String(v||'').toLowerCase().replace(/[^a-z0-9]/g,'')}
+function matchInfo(s,child,role){let raw=String(s||'').trim(),key=child&&rabbitKey(child)+'|'+role,override=key&&db.parentLinks[key];if(override){if(override.kind==='text')return {record:null,label:override.label||'Unknown',status:'manual'};let rec=db.rabbits.find(x=>rabbitKey(x)===override.id);if(rec)return {record:rec,label:name(rec),status:'verified'};return {record:null,label:raw||'Missing linked record',status:'unmatched'}}let t=cleanParent(raw);if(!t)return {record:null,label:'Unknown',status:'unknown'};let a=db.rabbits.filter(x=>normParent(name(x))===normParent(t));if(!a.length)a=db.rabbits.filter(x=>normParent(x.Name)===normParent(t));if(a.length===1)return {record:a[0],label:name(a[0]),status:'matched'};return {record:null,label:raw,status:a.length?'ambiguous':'unmatched'}}
+function parentEditor(i){let root=db.rabbits[i];let fields=['Father','Mother'];el('view').innerHTML=`<button onclick="pedigree(${i})">← Back to pedigree</button><h2>Verify parents: ${esc(name(root))}</h2><div class="card"><p class="muted">Select a rabbit from your imported records or preserve an ancestor as text. This does not overwrite original Everbreed parent fields. A manual link will be used in pedigree trees and saved in JSON backups.</p><form id="parentForm">${fields.map(role=>{let current=db.parentLinks[rabbitKey(root)+'|'+role],info=matchInfo(root[role],root,role);let id=current?.kind==='record'?current.id:'';return `<label>${role} (original: ${esc(root[role]||'not recorded')})<select name="${role}Id"><option value="">— No linked rabbit; use text below —</option>${db.rabbits.filter(r=>rabbitKey(r)!==rabbitKey(root)&&String(r.Sex||'').toLowerCase()===(role==='Father'?'buck':'doe')).sort((a,b)=>name(a).localeCompare(name(b))).map(r=>`<option value="${esc(rabbitKey(r))}" ${id===rabbitKey(r)?'selected':''}>${esc(name(r))} · ${esc(r.Tattoo||'no tattoo')}</option>`).join('')}</select></label><label>${role} text when no rabbit is linked<input name="${role}Text" value="${esc(current?.kind==='text'?current.label:(root[role]||''))}"></label><p class="muted">Current result: ${esc(info.label)} (${esc(info.status)})</p>`}).join('')}<button class="primary" type="submit">Save parent corrections</button></form></div>`;el('parentForm').onsubmit=e=>{e.preventDefault();let data=new FormData(e.target),old=JSON.stringify(db.parentLinks);for(let role of fields){let id=String(data.get(role+'Id')||''),label=String(data.get(role+'Text')||'').trim(),key=rabbitKey(root)+'|'+role;if(id){let candidate=db.rabbits.find(r=>rabbitKey(r)===id);if(!candidate||id===rabbitKey(root)){alert('Invalid parent selection');return}db.parentLinks[key]={kind:'record',id}}else if(label)db.parentLinks[key]={kind:'text',label};else delete db.parentLinks[key]}try{save();pedigree(i)}catch(err){db.parentLinks=JSON.parse(old);alert('Unable to save parent corrections. Export a backup and check storage.')}}}
+function pedigree(i){let root=db.rabbits[i],gens=Number(window.pedGens||3);let nodes=[{record:root,label:name(root),status:'matched',path:0,level:0}];for(let depth=1;depth<gens;depth++){let prior=nodes.filter(n=>n.level===depth-1);for(let n of prior){for(let [idx,key] of ['Father','Mother'].entries()){let info=n.record?matchInfo(n.record[key],n.record,key):{record:null,label:'Unknown',status:'unknown'};nodes.push({...info,path:n.path*2+idx,level:depth})}}}let columns=[];for(let d=0;d<gens;d++){let group=nodes.filter(n=>n.level===d);columns.push(`<div class="pedcol"><h3>${['Rabbit','Parents','Grandparents','Great-grandparents','4th generation ancestors'][d]||'Ancestors'}</h3>${group.map(n=>`<div class="pednode ${n.status}"><strong>${esc(n.label||'Unknown')}</strong>${n.record?`<small>${esc(['Tattoo','Reg #','Color','Breed','Weight','DoB'].map(k=>n.record[k]?(k+': '+n.record[k]):'').filter(Boolean).join(' · '))}</small>`:''}${n.status!=='matched'&&n.status!=='verified'?`<small>${n.status==='ambiguous'?'⚠ Multiple possible matches':n.status==='unmatched'?'Not found in imported rabbits':n.status==='manual'?'Manually entered text':'Not recorded'}</small>`:''}${n.status==='verified'?'<small>Manually linked</small>':''}</div>`).join('')}</div>`)}let unverified=nodes.filter(n=>!['matched','verified'].includes(n.status)).length;el('view').innerHTML=`<button class="no-print" onclick="nav('Pedigrees')">← Pedigrees</button><div class="row"><h2>${esc(name(root))}</h2><button class="no-print" onclick="window.print()">Print / Save PDF</button></div><div class="no-print"><button onclick="parentEditor(${i})">Verify / correct parents</button><label>Generations <select onchange="window.pedGens=Number(this.value);pedigree(${i})"><option value="3" ${gens===3?'selected':''}>3 generations</option><option value="5" ${gens===5?'selected':''}>5 generations</option></select></label></div><div class="card"><div class="pedigree-brand"><img src="tangled-woods-logo.jpg" alt="Tangled Woods Rabbitry logo"><strong>Tangled Woods Rabbitry · Pedigree</strong></div><p>${esc(name(root))} · ${esc(root.Tattoo||'No tattoo')} · ${esc(root.Breed||'')} · ${esc(root.Color||'')}</p><p class="muted">${unverified} unresolved or text-only ancestor positions. Automatic name matches are not independently verified. Check all ancestor details against original pedigrees before issuing certificates.</p></div><div class="ped ped${gens}">${columns.join('')}</div><div class="card"><p>I certify that this pedigree is correct to the best of my knowledge.</p><p>Signature: _________________________ Date: _____________</p></div>`}
+function parseDate(v){let s=String(v||'').trim(),m=s.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/);if(m){let d=new Date(+m[3],+m[1]-1,+m[2]);return d.getFullYear()===+m[3]&&d.getMonth()===+m[1]-1&&d.getDate()===+m[2]?d:null}if(/^\d{4}-\d\d-\d\d$/.test(s)){let d=new Date(s+'T12:00:00');return Number.isNaN(+d)?null:d}return null}
+function dateISO(d){let n=new Date(d);return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`}
+function addDays(d,n){let x=new Date(d);x.setDate(x.getDate()+n);return x}
+function rabbitChoices(sex){return db.rabbits.map((r,i)=>({r,i})).filter(y=>String(y.r.Sex||'').toLowerCase()===sex).map(y=>`<option value="${esc(y.r._id||'r-import-'+y.i)}">${esc(name(y.r)||'Unnamed')} · ${esc(y.r.Tattoo||'No tattoo')}</option>`).join('')}
+function rabbitLabel(id){let r=db.rabbits.find((r,i)=>(r._id||'r-import-'+i)===id);return r?name(r):'Missing rabbit'}
+function newBreeding(i=-1){let x=i<0?{}:db.breedings[i];el('view').innerHTML=`<button onclick="nav('Breeding')">← Cancel</button><h2>${i<0?'New':'Edit'} breeding</h2><div class="card"><p class="muted">Select the parents from imported records. This creates a breeding record, not a litter.</p><form id="breedForm"><label>Doe<select name="doeId" required><option value="">Choose doe…</option>${rabbitChoices('doe')}</select></label><label>Buck<select name="buckId" required><option value="">Choose buck…</option>${rabbitChoices('buck')}</select></label><label>Breeding date<input name="date" type="date" required value="${esc(x.date||dateISO(new Date()))}"></label><div class="card" id="duePreview" aria-live="polite"></div><label>Status<select name="status">${['Bred','Confirmed pregnant','Kindled','Unsuccessful','Cancelled'].map(v=>`<option value="${v}">${v}</option>`).join('')}</select></label><label>Actual kindling date (optional)<input name="kindledDate" type="date" value="${esc(x.kindledDate||'')}"></label><label>Notes<textarea name="notes">${esc(x.notes||'')}</textarea></label><button class="primary" type="submit">${i<0?'Save breeding':'Save changes'}</button></form></div>`;let f=el('breedForm');f.elements.doeId.value=x.doeId||'';f.elements.buckId.value=x.buckId||'';f.elements.status.value=x.status||'Bred';let update=()=>{let d=parseDate(f.elements.date.value);el('duePreview').textContent=d?'Estimated kindling: '+dateISO(addDays(d,31))+' (typical range '+dateISO(addDays(d,28))+'–'+dateISO(addDays(d,33))+')':'Select a breeding date'};f.elements.date.addEventListener('input',update);update();f.onsubmit=e=>{e.preventDefault();let z=Object.fromEntries(new FormData(f));if(!db.rabbits.some(r=>r._id===z.doeId&&String(r.Sex).toLowerCase()==='doe')||!db.rabbits.some(r=>r._id===z.buckId&&String(r.Sex).toLowerCase()==='buck')){alert('Choose a valid doe and buck');return}if(z.doeId===z.buckId){alert('Choose two different rabbits');return}let previous=JSON.stringify(db.breedings);let rec={...x,...z,_id:x._id||'b-'+Date.now()};if(i<0)db.breedings.push(rec);else db.breedings[i]=rec;try{save();nav('Breeding')}catch(err){db.breedings=JSON.parse(previous);alert('Could not save. Check device storage and export a backup.')}}}
+function removeBreeding(i){if(!confirm('Delete this breeding record? This does not delete rabbits or litters.'))return;let old=db.breedings.slice();db.breedings.splice(i,1);try{save();nav('Breeding')}catch(e){db.breedings=old;alert('Could not delete: '+e.message)}}
+function breeding(){let today=new Date();today.setHours(0,0,0,0);let active=db.breedings.map((x,i)=>({x,i,date:parseDate(x.date)})).filter(y=>y.date&&!['Kindled','Unsuccessful','Cancelled'].includes(y.x.status)&&!y.x.kindledDate).map(y=>({...y,due:addDays(y.date,31)})).sort((a,b)=>a.due-b.due);let upcoming=active.filter(y=>y.due>=today&&y.due<=addDays(today,45)),overdue=active.filter(y=>y.due<today);let recent=db.litters.map((x,i)=>({x,i,date:parseDate(x.Born)})).filter(y=>y.date).sort((a,b)=>b.date-a.date).slice(0,12);el('view').innerHTML=`<div class="row"><h2>Breeding planner</h2><button class="primary" onclick="newBreeding()">+ New breeding</button></div><div class="card"><h3>Kindling estimates</h3><p class="muted">Estimated 31 days after breeding (typical range 28–33 days). Confirm dates with your own records and veterinary guidance.</p><div class="stats"><div class="stat"><strong>${upcoming.length}</strong>Next 45 days</div><div class="stat"><strong>${overdue.length}</strong>Past estimated date</div><div class="stat"><strong>${db.breedings.length}</strong>Breeding records</div></div></div><h3>Upcoming expected kindling</h3>${upcoming.length?upcoming.map(y=>`<button class="listitem" onclick="newBreeding(${y.i})"><strong>${esc(rabbitLabel(y.x.doeId))} × ${esc(rabbitLabel(y.x.buckId))}</strong><span class="muted">Est. ${dateISO(y.due)} · ${esc(y.x.status)}</span></button>`).join(''):'<div class="card muted">No upcoming kindling dates recorded. Add a breeding to begin planning.</div>'}<h3>Breeding history</h3>${db.breedings.length?db.breedings.map((x,i)=>({x,i})).reverse().map(y=>`<div class="card"><strong>${esc(rabbitLabel(y.x.doeId))} × ${esc(rabbitLabel(y.x.buckId))}</strong><p class="muted">Bred ${esc(y.x.date)} · ${esc(y.x.status)}${y.x.kindledDate?' · Kindled '+esc(y.x.kindledDate):''}</p><button onclick="newBreeding(${y.i})">Edit</button> <button onclick="removeBreeding(${y.i})">Delete</button></div>`).join(''):'<p class="muted">No separate breeding records yet. Historical imported litters remain below.</p>'}<h3>Recent recorded litters</h3>${recent.map(y=>`<button class="listitem" onclick="detail('litters',${y.i})"><strong>${esc(name(y.x)||'Unnamed litter')}</strong><span class="muted">Born ${dateISO(y.date)} · ${esc(y.x['Total Kits']||'?')} kits</span></button>`).join('')||'<p>No recorded births yet.</p>'}<div class="card"><h3>Reminders</h3><p>Dates appear when the app opens. Push notifications and automatic device syncing are not enabled.</p></div>`}
+function filterPed(q){let a=db.rabbits.map((x,i)=>({...x,__index:i})).filter(x=>[name(x),x.Tattoo].some(s=>String(s||'').toLowerCase().includes(q.toLowerCase())));el('results').innerHTML=a.slice(0,60).map(x=>`<button class="listitem" onclick="pedigree(${x.__index})"><strong>${esc(name(x))}</strong><span class="muted">${esc(x.Tattoo||'')} · ${esc(x.Breed||'')}</span></button>`).join('')}
+let pendingCSV=null;
+function parseCSV(text){text=text.replace(/^\uFEFF/,'');let rows=[],row=[],field='',quoted=false;for(let i=0;i<text.length;i++){let c=text[i];if(quoted){if(c==='"'&&text[i+1]==='"'){field+='"';i++}else if(c==='"')quoted=false;else field+=c}else if(c==='"')quoted=true;else if(c===','){row.push(field);field=''}else if(c==='\n'||c==='\r'){if(c==='\r'&&text[i+1]==='\n')i++;row.push(field);if(row.some(x=>x.trim()))rows.push(row);row=[];field=''}else field+=c}if(quoted)throw Error('Unclosed quoted field');if(field!==''||row.length){row.push(field);if(row.some(x=>x.trim()))rows.push(row)}if(!rows.length)throw Error('Empty CSV');let headers=rows.shift().map(x=>x.trim());if(new Set(headers).size!==headers.length)throw Error('Duplicate column headers');return {headers,records:rows.map(r=>Object.fromEntries(headers.map((h,i)=>[h,r[i]??''])))};}
+async function previewCSV(){pendingCSV=null;let f=el('importFile').files[0],box=el('importPreview');if(!f)return;try{if(f.size>15*1024*1024)throw Error('File exceeds 15 MB');let parsed=parseCSV(await f.text()),type=el('importType').value,required=type==='rabbits'?['Name','Father','Mother','Breed']:['Name','Father','Mother','Total Kits'];let missing=required.filter(h=>!parsed.headers.includes(h));if(missing.length)throw Error('This does not look like a '+type+' export. Missing: '+missing.join(', '));if(!parsed.records.length)throw Error('No records found');pendingCSV={type,records:parsed.records};box.innerHTML=`<p><strong>${parsed.records.length} records found</strong> · ${parsed.headers.length} columns</p><p>Columns: ${esc(parsed.headers.join(', '))}</p><p>Preview: ${esc([parsed.records[0].Prefix,parsed.records[0].Name].filter(Boolean).join(' '))}</p><button class="primary" onclick="commitCSV()">Replace ${type} records with this CSV</button>`;}catch(err){box.textContent='Could not preview CSV: '+err.message;}}
+function commitCSV(){if(!pendingCSV)return;let {type,records}=pendingCSV;if(!confirm('Replace all '+db[type].length+' existing '+type+' records on THIS DEVICE with '+records.length+' imported records? Download a backup first.'))return;let previous=db[type];db[type]=records.map((r,i)=>({...r,_id:type[0]+'-import-'+i}));try{save();pendingCSV=null;alert('Imported '+records.length+' '+type+' records on this device. Download a JSON backup now.');nav('Home')}catch(err){db[type]=previous;alert('Could not save import. Device storage may be full: '+err.message)}}
+function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date().toISOString()},null,2)],{type:'application/json'}),a=document.createElement('a');a.href=URL.createObjectURL(blob);a.download='tangled-woods-backup-'+new Date().toISOString().slice(0,10)+'.json';a.click();setTimeout(()=>URL.revokeObjectURL(a.href),3000)}async function restore(e){let f=e.target.files[0];if(!f)return;try{let data=JSON.parse(await f.text());if(!Array.isArray(data.rabbits)||!Array.isArray(data.litters))throw Error('Invalid backup');if(confirm('Replace all current local data with this backup?')){db={rabbits:data.rabbits,litters:data.litters,breedings:Array.isArray(data.breedings)?data.breedings:[]};save();nav('Home')}}catch(err){alert('Could not read backup: '+err.message)}}if('serviceWorker'in navigator&&location.protocol.startsWith('http'))navigator.serviceWorker.register('./sw.js').catch(()=>{});render();
+</script><script>
+/* Tangled Woods Rabbitry Manager v3.4 backup/restore enhancement.
+   Load AFTER the existing inline application script. */
+(() => {
+  'use strict';
+  const MAX_BYTES = 25 * 1024 * 1024;
+  let candidate = null;
+  const originalRender = render;
+  function showBackup() {
+    const view = document.getElementById('view');
+    if (!view || page !== 'Backup') return;
+    view.innerHTML = `<h2>Data & backups</h2>
+      <div class="card"><h3>Download a backup</h3>
+      <p>Save a complete JSON backup in Files or iCloud Drive. Keep a copy before importing or restoring.</p>
+      <button class="primary" type="button" onclick="backup()">Download backup</button></div>
+      <div class="card"><h3>Restore a backup</h3>
+      <p>Choose a previously saved Tangled Woods JSON backup. You can review the record counts before replacing anything.</p>
+      <button class="primary" id="twChooseBackup" type="button">Choose backup file</button>
+      <label for="twBackupFile" class="tw-file-label">Or tap here to browse Files
+        <input id="twBackupFile" type="file" accept=".json,application/json" style="display:block;width:100%;font-size:16px;margin-top:10px" aria-describedby="twRestoreStatus">
+      </label>
+      <p class="muted" id="twRestoreStatus" role="status" aria-live="polite">No file selected.</p>
+      <div id="twRestorePreview"></div></div>
+      <div class="card"><h3>Important</h3>
+      <p>This app stores records in this browser, not in GitHub. Clearing Safari website data may erase records. Devices do not automatically sync.</p>
+      <p class="muted">Restoring replaces the current rabbits, litters, breeding history, and manual pedigree links on this device.</p></div>`;
+    const input = document.getElementById('twBackupFile');
+    document.getElementById('twChooseBackup').addEventListener('click', () => {
+      const status = document.getElementById('twRestoreStatus');
+      status.textContent = 'Opening file picker… If nothing appears, tap “Or tap here to browse Files” below.';
+      try { input.click(); } catch (err) { status.textContent = 'File picker could not open: ' + err.message; }
+    });
+    input.addEventListener('change', previewBackup);
+  }
+  render = function () { originalRender(); if (page === 'Backup') showBackup(); };
+  function checkRecords(value, label) {
+    if (!Array.isArray(value) || value.some(x => !x || typeof x !== 'object' || Array.isArray(x))) {
+      throw new Error(label + ' must be an array of records.');
+    }
+  }
+  async function previewBackup(event) {
+    candidate = null;
+    const status = document.getElementById('twRestoreStatus');
+    const preview = document.getElementById('twRestorePreview');
+    preview.replaceChildren();
+    const file = event.target.files && event.target.files[0];
+    if (!file) { status.textContent = 'No file selected. Tap the file field to try again.'; return; }
+    status.textContent = 'Reading ' + file.name + '…';
+    try {
+      if (file.size > MAX_BYTES) throw new Error('Backup exceeds 25 MB.');
+      const data = JSON.parse(await file.text());
+      if (!data || typeof data !== 'object' || Array.isArray(data)) throw new Error('Not a backup object.');
+      checkRecords(data.rabbits, 'Rabbits');
+      checkRecords(data.litters, 'Litters');
+      if (data.breedings !== undefined) checkRecords(data.breedings, 'Breedings');
+      if (data.parentLinks !== undefined && (!data.parentLinks || typeof data.parentLinks !== 'object' || Array.isArray(data.parentLinks))) {
+        throw new Error('Parent links are invalid.');
+      }
+      const safe = {rabbits:data.rabbits, litters:data.litters,
+        breedings:data.breedings || [], parentLinks:data.parentLinks || {}};
+      candidate = safe;
+      status.textContent = 'Backup selected: ' + file.name;
+      const title = document.createElement('h3'); title.textContent = 'Backup preview';
+      const counts = document.createElement('p');
+      counts.textContent = `${safe.rabbits.length} rabbits · ${safe.litters.length} litters · ${safe.breedings.length} breedings · ${Object.keys(safe.parentLinks).length} manual pedigree links`;
+      const note = document.createElement('p'); note.className = 'muted';
+      note.textContent = 'These will replace the records currently stored in Safari. Download a backup of your current records first.';
+      const button = document.createElement('button'); button.type = 'button'; button.className = 'primary';
+      button.textContent = 'Restore this backup'; button.addEventListener('click', commitBackup);
+      preview.append(title, counts, note, button);
+    } catch (err) {
+      status.textContent = 'Could not read backup: ' + err.message;
+      event.target.value = '';
+    }
+  }
+  function commitBackup() {
+    if (!candidate) return;
+    if (!confirm(`Replace the current ${db.rabbits.length} rabbits and ${db.litters.length} litters with ${candidate.rabbits.length} rabbits and ${candidate.litters.length} litters? This cannot be undone without another backup.`)) return;
+    const previous = db;
+    try {
+      localStorage.setItem(KEY, JSON.stringify(candidate));
+      db = candidate;
+      candidate = null;
+      nav('Home');
+      alert('Backup restored successfully.');
+    } catch (err) {
+      db = previous;
+      alert('Restore failed; existing records were kept. ' + err.message);
+    }
+  }
+  // Replace the legacy restore handler too, so it cannot bypass preview/validation.
+  restore = function () { nav('Backup'); };
+  const footer = document.querySelector('footer');
+  if (footer) footer.textContent = 'Version 3.4 · Local records · No automatic sync';
+  render();
+})();
+
+
+/* Version 3.5: print-first pedigrees and local rabbit photos */
+(function(){
+ const css=document.createElement('style');css.textContent=`
+ .tw-photo-tools{margin:12px 0}.tw-photo-tools input{max-width:100%;margin:8px 0}.tw-photo{width:115px;height:115px;object-fit:cover;border-radius:10px;border:1px solid #d6ddd4}.tw-ped-head{display:flex;align-items:center;gap:15px}.tw-ped-head .pedigree-brand{flex:1}.tw-photo-note{font-size:12px;color:#63746a}
+ .tw-ped-tree{display:grid;grid-template-columns:repeat(var(--tw-cols),minmax(0,1fr));gap:5px;align-items:stretch;width:100%}.tw-ped-col{display:grid;grid-template-rows:repeat(var(--tw-rows),minmax(0,1fr));gap:3px;min-width:0}.tw-ped-cell{border:1px solid #d6e1d5;border-radius:5px;padding:5px;min-width:0;overflow-wrap:anywhere;display:flex;flex-direction:column;justify-content:center;background:#fff}.tw-ped-cell strong{font-size:11px;line-height:1.2}.tw-ped-cell small{font-size:9px;color:#52665a;line-height:1.2}.tw-ped-cell.unknown{color:#888;background:#f8f8f5}.tw-ped-cell.unmatched{border-style:dashed}.tw-ped-labels{display:grid;grid-template-columns:repeat(var(--tw-cols),minmax(0,1fr));gap:5px;font-size:12px;font-weight:700;margin:12px 0 5px}.tw-ped-print{width:100%}
+ @media print{@page{size:letter landscape;margin:0.28in}html,body{width:auto!important;background:#fff!important}main{max-width:none!important;padding:0!important;margin:0!important}.tw-photo-tools,.tw-photo-note,.no-print{display:none!important}.tw-ped-print{break-inside:avoid;page-break-inside:avoid}.tw-ped-tree{gap:3px}.tw-ped-col{gap:2px}.tw-ped-cell{padding:2px;border-radius:2px}.tw-ped-cell strong{font-size:8px;line-height:1.06}.tw-ped-cell small{font-size:6.5px;line-height:1.05}.tw-ped-labels{font-size:9px;margin:3px 0}.tw-ped-head{margin:2px 0}.tw-photo{width:65px;height:65px}.tw-ped-print .card{padding:4px;margin:3px 0;border:0}.tw-ped-print h2{font-size:15px;margin:4px 0}.tw-ped-print .muted{font-size:9px}.tw-ped-tree[data-gens="5"]{height:5.55in}.tw-ped-tree[data-gens="3"]{height:4.5in}.tw-ped-sign{font-size:10px;margin-top:7px}}
+ `;document.head.append(css);
+ const openPhotos=()=>new Promise((resolve,reject)=>{let req=indexedDB.open('tangledwoods-rabbit-photos',1);req.onupgradeneeded=()=>req.result.createObjectStore('photos');req.onsuccess=()=>resolve(req.result);req.onerror=()=>reject(req.error)});
+ const photoKey=(r,i)=>String(r._id||'r-import-'+i);
+ async function getPhoto(key){const d=await openPhotos();return new Promise((resolve,reject)=>{const t=d.transaction('photos','readonly'),r=t.objectStore('photos').get(key);r.onsuccess=()=>{resolve(r.result||null);d.close()};r.onerror=()=>{reject(r.error);d.close()}})}
+ async function putPhoto(key,value){const d=await openPhotos();return new Promise((resolve,reject)=>{const t=d.transaction('photos','readwrite');t.objectStore('photos').put(value,key);t.oncomplete=()=>{d.close();resolve()};t.onerror=()=>{d.close();reject(t.error)}})}
+ async function removePhoto(key){const d=await openPhotos();return new Promise((resolve,reject)=>{const t=d.transaction('photos','readwrite');t.objectStore('photos').delete(key);t.oncomplete=()=>{d.close();resolve()};t.onerror=()=>{d.close();reject(t.error)}})}
+ async function compress(file){if(!file.type.startsWith('image/'))throw Error('Select an image file');if(file.size>20*1024*1024)throw Error('Image must be smaller than 20 MB');const img=await createImageBitmap(file);const max=720,scale=Math.min(1,max/Math.max(img.width,img.height));const c=document.createElement('canvas');c.width=Math.round(img.width*scale);c.height=Math.round(img.height*scale);c.getContext('2d').drawImage(img,0,0,c.width,c.height);img.close();return c.toDataURL('image/jpeg',.78)}
+ function showPhoto(i){const r=db.rabbits[i],key=photoKey(r,i),holder=document.getElementById('twPhotoDisplay');if(!holder)return;getPhoto(key).then(src=>{if(!document.getElementById('twPhotoDisplay'))return;holder.innerHTML=src?`<img class="tw-photo" alt="Rabbit photo" src="${src}">`:''}).catch(()=>{holder.textContent='Photo unavailable on this device.'})}
+ window.twAddPhoto=async function(i){const input=document.getElementById('twPhotoInput');const status=document.getElementById('twPhotoStatus');if(!input.files?.[0])return;status.textContent='Saving photo…';try{const url=await compress(input.files[0]);await putPhoto(photoKey(db.rabbits[i],i),url);status.textContent='Photo saved on this device.';showPhoto(i)}catch(e){status.textContent='Could not save photo: '+e.message}}
+ window.twRemovePhoto=async function(i){if(!confirm('Remove this rabbit photo from this device?'))return;await removePhoto(photoKey(db.rabbits[i],i));showPhoto(i)};
+ const oldPed=pedigree;
+ pedigree=function(i){const root=db.rabbits[i];if(!root)return;const gens=Number(window.pedGens||3);const cols=[];let current=[{record:root,label:name(root),status:'matched'}];for(let d=0;d<gens;d++){cols.push(current);const next=[];for(const n of current){for(const role of ['Father','Mother'])next.push(n.record?matchInfo(n.record[role],n.record,role):{record:null,label:'Unknown',status:'unknown'})}current=next}
+ const labels=['Rabbit','Parents','Grandparents','Great-grandparents','4th generation'];const cell=n=>`<div class="tw-ped-cell ${esc(n.status)}"><strong>${esc(n.label||'Unknown')}</strong>${n.record?`<small>${esc([n.record.Tattoo&&'Tattoo: '+n.record.Tattoo,n.record.Color,n.record.Breed,n.record.DoB&&'Born: '+n.record.DoB].filter(Boolean).join(' · '))}</small>`:''}</div>`;
+ const count=cols.flat().filter(n=>!['matched','verified'].includes(n.status)).length;
+ el('view').innerHTML=`<div class="no-print"><button onclick="nav('Pedigrees')">← Pedigrees</button><div class="row"><h2>${esc(name(root))}</h2><button onclick="window.print()">Print / Save PDF</button></div><button onclick="parentEditor(${i})">Verify / correct parents</button><label>Generations<select onchange="window.pedGens=Number(this.value);pedigree(${i})"><option value="3" ${gens===3?'selected':''}>3 generations</option><option value="5" ${gens===5?'selected':''}>5 generations</option></select></label><div class="card tw-photo-tools"><strong>Rabbit photograph</strong><p class="tw-photo-note">Add a photo from your iPad. Photos are stored on this device separately and are NOT included in JSON backups or synced.</p><input id="twPhotoInput" type="file" accept="image/*" onchange="twAddPhoto(${i})"><button onclick="twRemovePhoto(${i})">Remove photo</button><div id="twPhotoStatus" class="tw-photo-note"></div></div></div><div class="tw-ped-print"><div class="card"><div class="tw-ped-head"><div class="pedigree-brand"><img src="tangled-woods-logo.jpg" alt="Tangled Woods logo"><strong>Tangled Woods Rabbitry · ${gens}-Generation Pedigree</strong></div><div id="twPhotoDisplay"></div></div><p><strong>${esc(name(root))}</strong> · ${esc(root.Tattoo||'No tattoo')} · ${esc(root.Breed||'')} · ${esc(root.Color||'')}</p><p class="muted no-print">${count} unresolved or text-only ancestor positions. Verify original records before issuing certificates.</p></div><div class="tw-ped-labels" style="--tw-cols:${gens}">${labels.slice(0,gens).map(x=>`<div>${x}</div>`).join('')}</div><div class="tw-ped-tree" data-gens="${gens}" style="--tw-cols:${gens};--tw-rows:${2**(gens-1)}">${cols.map((group,d)=>`<div class="tw-ped-col" style="--tw-rows:${group.length}">${group.map(cell).join('')}</div>`).join('')}</div><div class="tw-ped-sign">I certify this pedigree is correct to the best of my knowledge. &nbsp; Signature: ________________________ &nbsp; Date: __________</div></div>`;
+ showPhoto(i)
+ };
+ window.pedGens=3;
+ const f=document.querySelector('footer');if(f)f.textContent='Version 3.5 · Local records · No automatic sync';
+})();
+</script><style id="tw-v36-print">
+/* v3.6: Letter landscape, both generation views */
+.tw-ped-print{width:100%;max-width:100%;}
+.tw-ped-print .tw-ped-cell{justify-content:center;align-items:flex-start;}
+.tw-ped-print .tw-ped-cell strong{font-size:clamp(11px,1.3vw,15px);line-height:1.25;}
+.tw-ped-print .tw-ped-cell small{font-size:clamp(9px,1vw,12px);line-height:1.3;margin-top:3px;}
+.tw-ped-tree[data-gens="3"]{height:330px;}
+.tw-ped-tree[data-gens="5"]{height:520px;}
+.tw-ped-print .tw-photo{width:135px;height:135px;object-fit:cover;}
+.tw-ped-print .tw-ped-head .pedigree-brand{min-width:0;}
+.tw-ped-print .tw-ped-sign{margin-top:14px;display:block;line-height:1.5;}
+@media print {
+ @page {size:11in 8.5in;margin:.32in;}
+ html,body{margin:0!important;padding:0!important;width:auto!important;height:auto!important;}
+ main{padding:0!important;margin:0!important;max-width:none!important;}
+ .tw-ped-print{width:100%!important;max-width:none!important;break-inside:avoid;page-break-inside:avoid;}
+ .tw-ped-print .card{padding:2px 0!important;margin:0 0 5px!important;}
+ .tw-ped-print .tw-ped-head{gap:12px;min-height:1.1in;}
+ .tw-ped-print .pedigree-brand img{width:.78in!important;height:.78in!important;}
+ .tw-ped-print .pedigree-brand strong{font-size:17px!important;line-height:1.15;}
+ .tw-ped-print .tw-photo{width:1.05in!important;height:1.05in!important;border-radius:5px;}
+ .tw-ped-print .card p{font-size:13px!important;margin:4px 0!important;}
+ .tw-ped-print .tw-ped-labels{font-size:11px!important;margin:5px 0 3px!important;}
+ .tw-ped-print .tw-ped-tree{gap:5px!important;}
+ .tw-ped-print .tw-ped-col{gap:3px!important;}
+ .tw-ped-print .tw-ped-cell{padding:7px!important;justify-content:center!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="3"]{height:3.55in!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="3"] .tw-ped-cell strong{font-size:13px!important;line-height:1.2!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="3"] .tw-ped-cell small{font-size:10px!important;line-height:1.2!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"]{height:5.1in!important;gap:3px!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"] .tw-ped-cell{padding:3px!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"] .tw-ped-cell strong{font-size:8px!important;line-height:1.07!important;}
+ .tw-ped-print .tw-ped-tree[data-gens="5"] .tw-ped-cell small{font-size:6.5px!important;line-height:1.05!important;margin-top:1px!important;}
+ .tw-ped-print .tw-ped-sign{font-size:11px!important;margin-top:12px!important;white-space:normal;}
+}
+</style><script>
+/* Version 3.6 retains the v3.5 data model and photo storage. */
+(function(){const f=document.querySelector('footer');if(f)f.textContent='Version 3.6 · Local records · No automatic sync';})();
+</script><style id="tw-v361-print-fix">
+@media print {
+  @page { size: 11in 8.5in; margin: 0.25in; }
+  html, body, main, #view { height: auto !important; min-height: 0 !important; margin: 0 !important; padding: 0 !important; }
+  .tw-ped-print { width: 100% !important; max-width: 100% !important; margin: 0 !important; break-inside: avoid !important; page-break-inside: avoid !important; }
+  .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .tw-ped-head { min-height: 0 !important; margin: 0 !important; }
+  .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .pedigree-brand img { width: 0.62in !important; height: 0.62in !important; }
+  .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .tw-photo { width: 0.72in !important; height: 0.72in !important; }
+  .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .pedigree-brand strong { font-size: 14px !important; }
+  .tw-ped-tree[data-gens="5"] { height: 4.55in !important; gap: 3px !important; }
+  .tw-ped-tree[data-gens="5"] .tw-ped-col { gap: 2px !important; min-height: 0 !important; }
+  .tw-ped-tree[data-gens="5"] .tw-ped-cell { min-height: 0 !important; padding: 2px !important; overflow: hidden !important; }
+  .tw-ped-tree[data-gens="5"] .tw-ped-cell strong { font-size: 8px !important; line-height: 1.05 !important; }
+  .tw-ped-tree[data-gens="5"] .tw-ped-cell small { font-size: 6.5px !important; line-height: 1.05 !important; margin-top: 1px !important; }
+  .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .tw-ped-sign { margin-top: 5px !important; font-size: 10px !important; }
+}
+</style>
+
+<script>document.querySelector("footer").textContent="Version 3.6.1 · Local records · No automatic sync";</script>
+<style id="tw-v362-print-fix">
+@media print {
+ @page { size: letter landscape; margin: .20in; }
+ html,body,main,#view {margin:0!important;padding:0!important;min-height:0!important;height:auto!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) {margin:0!important;padding:0!important;break-inside:auto!important;page-break-inside:auto!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .tw-ped-head {min-height:0!important;margin:0!important;padding:0!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .card {margin:0!important;padding:0!important;border:0!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .card p {margin:2px 0!important;font-size:10px!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .pedigree-brand img {width:.55in!important;height:.55in!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .tw-photo {width:.65in!important;height:.65in!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .pedigree-brand strong {font-size:13px!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .tw-ped-labels {margin:3px 0!important;font-size:9px!important;}
+ .tw-ped-tree[data-gens="5"] {height:3.9in!important;gap:2px!important;}
+ .tw-ped-tree[data-gens="5"] .tw-ped-col {gap:1px!important;min-height:0!important;}
+ .tw-ped-tree[data-gens="5"] .tw-ped-cell {min-height:0!important;padding:1px!important;overflow:hidden!important;}
+ .tw-ped-tree[data-gens="5"] .tw-ped-cell strong {font-size:7px!important;line-height:1!important;}
+ .tw-ped-tree[data-gens="5"] .tw-ped-cell small {font-size:5.5px!important;line-height:1!important;margin:0!important;}
+ .tw-ped-print:has(.tw-ped-tree[data-gens="5"]) .tw-ped-sign {margin-top:3px!important;font-size:9px!important;}
+}
+</style>
+<script>document.querySelector('footer').textContent='Version 3.6.2 · Local records · No automatic sync';</script>
+<style id="tw-v363-signature-fix">
+/* Five-generation printing only; leave three-generation layout unchanged. */
+@media print {
+  body:has(.tw-ped-tree[data-gens="5"]) .tw-ped-print .tw-ped-sign {
+    display: block !important;
+    position: fixed !important;
+    bottom: .48in !important;
+    left: .22in !important;
+    right: .22in !important;
+    margin: 0 !important;
+    padding: 2px 0 !important;
+    font-size: 10px !important;
+    line-height: 1.2 !important;
+    color: #263b32 !important;
+    background: #fff !important;
+    z-index: 10 !important;
+    white-space: nowrap !important;
+  }
+}
+</style>
+<script>document.querySelector('footer').textContent='Version 3.6.3 · Local records · No automatic sync';</script>
+<style id="tw-v364-signature-flow">
+/* Keep original certification in normal print flow on five-generation pages. */
+@media print {
+ body:has(.tw-ped-tree[data-gens="5"]) .tw-ped-print .tw-ped-sign {
+   position: static !important;
+   display: block !important;
+   visibility: visible !important;
+   margin: 6px 0 0 !important;
+   padding: 3px 0 !important;
+   font-size: 10px !important;
+   line-height: 1.25 !important;
+   white-space: normal !important;
+   break-inside: avoid !important;
+   page-break-inside: avoid !important;
+ }
+ body:has(.tw-ped-tree[data-gens="5"]) .tw-ped-tree[data-gens="5"] {
+   height: 3.65in !important;
+ }
+}
+</style>
+<script>document.querySelector('footer').textContent='Version 3.6.4 · Local records · No automatic sync';</script>
+<style id="tw-cloud-preview-style">
+.tw-cloud-note{background:#f0f6f1;border:1px solid #c9decf;border-radius:12px;padding:13px;margin:12px 0}
+.tw-cloud-item{display:block;width:100%;text-align:left;background:#fff;border:1px solid #e1e6df;border-radius:10px;padding:12px;margin:6px 0}
+.tw-cloud-item strong{display:block}.tw-cloud-fields{white-space:pre-wrap;overflow-wrap:anywhere}
+</style>
+<script id="tw-cloud-preview-script">
+/* Read-only cloud preview: does not write to localStorage, IndexedDB, or Cloudflare. */
+(function(){
+  'use strict';
+  options.push('Cloud Preview');
+  const originalRenderCloud = render;
+  let records = null, loading = false, error = '', category = 'rabbits', search = '', shown = 50;
+  render = function(){
+    originalRenderCloud();
+    if(page === 'Cloud Preview') drawCloud();
+  };
+  function element(tag, text, cls){
+    const e=document.createElement(tag);
+    if(text!==undefined)e.textContent=String(text);
+    if(cls)e.className=cls;
+    return e;
+  }
+  async function loadCloud(){
+    loading=true;error='';records=null;drawCloud();
+    try{
+      const [r,l]=await Promise.all(['rabbits','litters'].map(async type=>{
+        const response=await fetch('/api/'+type,{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});
+        if(!response.ok)throw Error(type+' request returned HTTP '+response.status);
+        const data=await response.json();
+        if(!data || !Array.isArray(data[type]))throw Error(type+' response was not a record list');
+        return data[type];
+      }));
+      records={rabbits:r,litters:l};
+    }catch(e){error=e.message||String(e)}
+    finally{loading=false;if(page==='Cloud Preview')drawCloud()}
+  }
+  function drawCloud(){
+    const view=document.getElementById('view');
+    if(!view||page!=='Cloud Preview')return;
+    view.replaceChildren();
+    view.append(element('h2','Cloud records preview (read-only)'));
+    view.append(element('p','This tab reads Cloudflare records only. It does not replace, import, edit, or save any records on this device. Your existing local data and pedigree layouts remain unchanged.','tw-cloud-note'));
+    const btn=element('button',loading?'Loading cloud records…':records?'Reload cloud records':'Load cloud records','primary');
+    btn.type='button';btn.disabled=loading;btn.addEventListener('click',loadCloud);view.append(btn);
+    if(loading){view.append(element('p','Loading rabbits and litters…'));return}
+    if(error){view.append(element('p','Unable to load cloud records: '+error+' — check your Cloudflare login and try again.'));return}
+    if(!records){view.append(element('p','Click Load cloud records to begin.','muted'));return}
+    view.append(element('p',records.rabbits.length+' rabbits · '+records.litters.length+' litters retrieved from Cloudflare.'));
+    const choices=document.createElement('div');choices.className='row';
+    for(const type of ['rabbits','litters']){
+      const b=element('button',type==='rabbits'?'Rabbits':'Litters',category===type?'primary':'');
+      b.type='button';b.addEventListener('click',()=>{category=type;search='';shown=50;drawCloud()});choices.append(b)
+    }
+    view.append(choices);
+    const field=element('input');field.type='search';field.placeholder='Search '+category+' by name, tattoo, parent, or other field';field.value=search;
+    view.append(field);
+    const count=element('p','','muted');view.append(count);
+    const list=document.createElement('div');view.append(list);
+    const more=element('button','Show 50 more');more.type='button';view.append(more);
+    function updateList(){
+      const term=search.trim().toLowerCase();
+      const matches=records[category].filter(x=>x&&typeof x==='object'&&(!term||Object.values(x).some(v=>String(v??'').toLowerCase().includes(term))));
+      count.textContent=matches.length+' matching '+category+' · showing '+Math.min(shown,matches.length);
+      list.replaceChildren();
+      for(const x of matches.slice(0,shown)){
+        const title=[x.Prefix,x.Name].filter(Boolean).join(' ')||x.Name||x._id||'Unnamed record';
+        const summary=category==='rabbits'?[x.Breed,x.Sex,x.Tattoo]:[x.Born,x.Mother,x.Father];
+        const button=element('button',undefined,'tw-cloud-item');button.type='button';
+        button.append(element('strong',title),element('span',summary.filter(Boolean).join(' · '),'muted'));
+        button.addEventListener('click',()=>{
+          const existing=button.querySelector('.tw-cloud-fields');
+          if(existing){existing.remove();return}
+          const details=element('div',undefined,'tw-cloud-fields');
+          for(const [key,val] of Object.entries(x)){
+            if(key.startsWith('_')||val==null||val==='')continue;
+            details.append(element('p',key+': '+(typeof val==='object'?JSON.stringify(val):String(val))));
+          }
+          button.append(details);
+        });list.append(button);
+      }
+      more.hidden=shown>=matches.length;
+    }
+    field.addEventListener('input',()=>{search=field.value;shown=50;updateList()});
+    more.addEventListener('click',()=>{shown+=50;updateList()});
+    updateList();
+  }
+  render();
+})();
+</script>
+<style id="tw-cloud-app-style">
+.tw-cloud-app-banner{background:#eaf4ee;border:1px solid #a9cbb7;padding:13px;border-radius:12px;margin:12px 0}
+.tw-cloud-app-banner button{margin:5px 6px 0 0}
+</style>
+<script id="tw-cloud-app-script">
+/* Isolated TEST-001 cloud editing workspace. All other cloud editing remains blocked. */
+(function(){
+ 'use strict';
+ let cloudMode=false, cloudRecords=null, localDb=null, loading=false;
+ const baseRender=render, baseNav=nav;
+ options.push('Cloud App');
+ const originalEdit=edit, originalParentEditor=parentEditor, originalNewBreeding=newBreeding;
+ const originalRemoveBreeding=removeBreeding, originalCommitCSV=commitCSV;
+ const originalRestore=restore;
+ const originalPhotoAdd=window.twAddPhoto, originalPhotoRemove=window.twRemovePhoto;
+ const originalDetail=detail, originalPedigree=pedigree;
+ const originalBackup=backup, originalPreviewCSV=previewCSV;
+ function hideCloudEditing(){
+   if(!cloudMode)return;
+   const view=el('view');if(!view)return;
+   for(const button of view.querySelectorAll('button')){
+     const label=button.textContent.trim();
+     if(['+ Add','Edit','Verify / correct parents','Remove photo','+ New breeding','Save record','Save parent corrections'].includes(label))button.remove();
+   }
+   for(const input of view.querySelectorAll('input[type="file"]'))input.remove();
+   for(const label of view.querySelectorAll('label')){
+     if(label.textContent.includes('Rabbit photograph'))label.remove();
+   }
+   const photoTools=view.querySelector('.tw-photo-tools');if(photoTools)photoTools.remove();
+ }
+ window.twAddPhoto=function(...args){if(cloudMode)return blocked();return originalPhotoAdd(...args)};
+ window.twRemovePhoto=function(...args){if(cloudMode)return blocked();return originalPhotoRemove(...args)};
+ detail=function(...args){
+   const result=originalDetail(...args);hideCloudEditing();
+   if(cloudMode && args[0]==='rabbits'){
+     const rabbit=db.rabbits[args[1]];
+     if(rabbit && rabbit._id==='TEST-001'){
+       const card=el('view').querySelector('.card');
+       if(card){
+         const area=document.createElement('section');area.className='tw-cloud-app-banner no-print';
+         const heading=document.createElement('h3');heading.textContent='Edit TEST-001 (test database only)';area.append(heading);
+         const lbl=document.createElement('label');lbl.textContent='Rabbit name ';lbl.htmlFor='twTestName';area.append(lbl);
+         const input=document.createElement('input');input.id='twTestName';input.type='text';input.maxLength=120;input.value=rabbit.Name||'';area.append(input);
+         const btn=document.createElement('button');btn.type='button';btn.className='primary';btn.textContent='Save test rabbit';area.append(btn);
+         const status=document.createElement('p');status.setAttribute('role','status');area.append(status);
+         btn.onclick=async()=>{
+           const newName=input.value.trim();
+           if(!newName){status.textContent='Enter a name before saving.';return}
+           if(!confirm('Save the TEST-001 name to the isolated test database?'))return;
+           btn.disabled=true;status.textContent='Saving to test database…';
+           try{
+             const response=await fetch('/api/test-save-rabbit',{
+               method:'POST',credentials:'same-origin',
+               headers:{'Content-Type':'application/json','Accept':'application/json'},
+               body:JSON.stringify({_id:'TEST-001',Name:newName})
+             });
+             const body=await response.json();
+             if(!response.ok || body.saved!==true || body.rabbit?._id!=='TEST-001')throw Error(body.error||'Save not confirmed (HTTP '+response.status+')');
+             const check=await fetch('/api/rabbits',{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});
+             if(!check.ok)throw Error('Saved, but verification request failed (HTTP '+check.status+')');
+             const verified=await check.json();
+             const found=verified.rabbits?.find(x=>x._id==='TEST-001');
+             if(!found || found.Name!==newName)throw Error('Saved, but the retrieved name did not match');
+             db.rabbits[args[1]]=found;
+             status.textContent='Saved and independently verified in test database: '+found.Name;
+             // Keep the verified message visible; the full detail refreshes on next navigation.
+           }catch(e){status.textContent='Save/verification issue: '+e.message}
+           finally{btn.disabled=false}
+         };
+         card.append(area);
+       }
+     }
+   }
+   return result;
+ };
+ pedigree=function(...args){const result=originalPedigree(...args);hideCloudEditing();return result};
+ backup=function(...args){if(cloudMode)return blocked();return originalBackup(...args)};
+ previewCSV=function(...args){if(cloudMode)return blocked();return originalPreviewCSV(...args)};
+ function blocked(){alert('Cloud App permits only TEST-001 name editing in the isolated test panel. Other edits are disabled.');}
+ edit=function(...args){if(cloudMode)return blocked();return originalEdit(...args)};
+ parentEditor=function(...args){if(cloudMode)return blocked();return originalParentEditor(...args)};
+ newBreeding=function(...args){if(cloudMode)return blocked();return originalNewBreeding(...args)};
+ removeBreeding=function(...args){if(cloudMode)return blocked();return originalRemoveBreeding(...args)};
+ commitCSV=function(...args){if(cloudMode)return blocked();return originalCommitCSV(...args)};
+ restore=function(...args){if(cloudMode)return blocked();return originalRestore(...args)};
+ function leaveCloud(){if(cloudMode){db=localDb;localDb=null;cloudMode=false}}
+ nav=function(p){
+   if(p==='Cloud App'){leaveCloud();page=p;selected=null;query='';render();return}
+   if(cloudMode && !['Rabbits','Litters','Pedigrees'].includes(p))leaveCloud();
+   return baseNav(p);
+ };
+ render=function(){
+   if(page==='Cloud App'&&!cloudMode){
+     baseRender();
+     const view=el('view');view.replaceChildren();
+     const h=document.createElement('h2');h.textContent='Cloud App test (TEST-001 edit only)';view.append(h);
+     const note=document.createElement('p');note.className='tw-cloud-app-banner';note.textContent='Loads Cloudflare rabbits and litters into a temporary viewing workspace. No local records, cloud records, or photos are changed. Only TEST-001 name editing is enabled; all other edits are blocked.';view.append(note);
+     const b=document.createElement('button');b.className='primary';b.textContent=loading?'Loading…':'Open cloud records';b.disabled=loading;b.onclick=load;view.append(b);
+     const status=document.createElement('p');status.id='twCloudAppStatus';view.append(status);
+     return;
+   }
+   baseRender();
+   if(cloudMode){
+     const banner=document.createElement('div');banner.className='tw-cloud-app-banner no-print';
+     const strong=document.createElement('strong');strong.textContent='CLOUD TEST — TEST-001 name editing only — '+db.rabbits.length+' rabbits · '+db.litters.length+' litters';banner.append(strong);
+     const line=document.createElement('div');
+     for(const [label,target] of [['Rabbits','Rabbits'],['Litters','Litters'],['Pedigrees','Pedigrees'],['Exit cloud view','Cloud App']]){
+       const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>nav(target);line.append(b);
+     }
+     banner.append(line);el('view').prepend(banner);
+     hideCloudEditing();
+     for(const button of el('tabs').querySelectorAll('button')){
+       if(!['Rabbits','Litters','Pedigrees','Cloud App'].includes(button.textContent))button.disabled=true;
+     }
+   }
+ };
+ async function load(){
+   if(loading)return;loading=true;render();
+   const status=el('twCloudAppStatus');if(status)status.textContent='Reading records from Cloudflare…';
+   try{
+     const [r,l]=await Promise.all(['rabbits','litters'].map(async type=>{
+       const response=await fetch('/api/'+type,{credentials:'same-origin',cache:'no-store',headers:{Accept:'application/json'}});
+       if(!response.ok)throw Error(type+' HTTP '+response.status);
+       const json=await response.json();if(!Array.isArray(json[type]))throw Error('Invalid '+type+' response');return json[type];
+     }));
+     cloudRecords={rabbits:r,litters:l,breedings:[],parentLinks:{}};
+     localDb=db;db=cloudRecords;cloudMode=true;page='Rabbits';query='';selected=null;
+   }catch(e){const box=el('twCloudAppStatus');if(box)box.textContent='Cloud connection failed: '+e.message}
+   finally{loading=false;render()}
+ }
+})();
+</script>
+</body></html>
