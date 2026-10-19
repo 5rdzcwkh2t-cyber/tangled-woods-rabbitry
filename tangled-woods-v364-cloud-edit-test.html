@@ -530,8 +530,10 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
     const oldName = panel.querySelector('#twTestName');
     if (oldName) oldName.closest('label')?.remove();
     if (oldName) oldName.remove();
-
-    const form = document.createElement('form');
+const leftoverLabel = [...panel.querySelectorAll('label')]
+  .find(label => label.textContent.trim() === 'Rabbit name');
+if (leftoverLabel) leftoverLabel.remove();    
+     const form = document.createElement('form');
     form.id = 'twFourFieldForm';
 
     const expected = {};
