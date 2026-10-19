@@ -628,6 +628,7 @@ if (leftoverLabel) leftoverLabel.remove();
         }
 
         db.rabbits[index] = verified;
+         previousDetail(type, index);
 
         for (const key of fields) {
           expected[key] = String(verified[key] ?? '');
