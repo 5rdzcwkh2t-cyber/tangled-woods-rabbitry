@@ -35,12 +35,12 @@ export async function onRequestPost({ request, env }) {
 
     if (!body || typeof body !== "object" || Array.isArray(body) ||
         typeof id !== "string" ||
-        !/ ^TEST-(?:001|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(id) ||
+            !/^TEST-(?:001|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(id) ||
         !body.expected || typeof body.expected !== "object" || Array.isArray(body.expected) ||
         keys.some(key => typeof body[key] !== "string" ||
           body[key].length > 100 ||
           (key === "Name" && !body[key].trim()) ||
-          typeof body.expected[key] !== "string")) {
+          keys.some(key => typeof body.expected[key] !== "string")) {
       return reply({ error: "Invalid test rabbit fields" }, 400);
     }
 
