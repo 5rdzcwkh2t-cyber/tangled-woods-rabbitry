@@ -504,7 +504,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
 /* Four-field editor for test rabbits. Attach after synchronous detail rendering. */
 (function () {
   'use strict';
-  const fields = ['Name', 'Sex', 'Breed', 'Status'];
+  const fields = ['Prefix', 'Name', 'Sex', 'Tattoo', 'Breed', 'Color', 'DOB', 'Father', 'Mother', 'Weight', 'Status', 'Notes'];
   const previousDetail = detail;
 
   detail = function (type, index) {
