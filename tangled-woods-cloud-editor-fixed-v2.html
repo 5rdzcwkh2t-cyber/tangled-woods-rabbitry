@@ -606,7 +606,6 @@ archiveButton.textContent = rabbit.Archived === true
         saveButton.disabled = false;
       }
     });
-    });
     archiveButton.addEventListener('click', async () => {
   const restoring = rabbit.Archived === true;
   const action = restoring ? 'restore' : 'archive';
