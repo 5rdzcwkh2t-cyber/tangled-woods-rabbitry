@@ -556,9 +556,14 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
     saveButton.type = 'submit';
     saveButton.className = 'primary';
     saveButton.textContent = 'Save test rabbit';
+       const archiveButton = document.createElement('button');
+archiveButton.type = 'button';
+archiveButton.textContent = rabbit.Archived === true
+  ? 'Restore Rabbit'
+  : 'Archive Rabbit';
     const status = document.createElement('p');
     status.setAttribute('role', 'status');
-    form.append(saveButton, status);
+    form.append(saveButton, archiveButton, status);
     panel.append(form);
     card.append(panel);
 
@@ -602,7 +607,82 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
       }
     });
     });
-    return result;
+    archiveButton.addEventListener('click', async () => {
+  const restoring = rabbit.Archived === true;
+  const action = restoring ? 'restore' : 'archive';
+
+  if (!confirm(
+    'Are you sure you want to ' + action + ' ' + rabbit.Name + '?'
+  )) return;
+
+  status.textContent = 'Preparing to ' + action + ' rabbit...';
+       archiveButton.disabled = true;
+saveButton.disabled = true;
+
+try {
+  const changes = Object.fromEntries(
+    fields.map(key => [key, inputs[key].value.trim()])
+  );
+
+  const response = await fetch('/api/test-save-rabbit', {
+    method: 'POST',
+    credentials: 'same-origin',
+    headers: {
+      'Content-Type': 'application/json',
+      Accept: 'application/json'
+    },
+    body: JSON.stringify({
+      _id: rabbit._id,
+      ...changes,
+      Archived: !restoring,
+      expected
+    })
+  });
+
+  const body = await response.json();
+
+  if (!response.ok || body.saved !== true) {
+    throw new Error(body.error || 'Archive save failed');
+  }
+
+  const check = await fetch('/api/rabbits', {
+  credentials: 'same-origin',
+  cache: 'no-store',
+  headers: { Accept: 'application/json' }
+});
+
+if (!check.ok) {
+  throw new Error('Could not verify archive status');
+}
+
+const data = await check.json();
+const verified = data.rabbits?.find(r => r._id === rabbit._id);
+
+if (!verified || verified.Archived !== !restoring) {
+  throw new Error('Archive status did not match the database');
+}
+
+db.rabbits[index] = verified;
+rabbit.Archived = verified.Archived;
+   
+   archiveButton.textContent = verified.Archived
+  ? 'Restore Rabbit'
+  : 'Archive Rabbit';
+
+status.textContent = verified.Archived
+  ? 'Rabbit archived and verified.'
+  : 'Rabbit restored and verified.';
+archiveButton.disabled = false;
+} catch (error) {
+  status.textContent = 'Archive/restore issue: ' + error.message;
+   archiveButton.disabled = true;
+status.textContent += ' Reload cloud records before trying again.';
+} finally {
+ 
+  saveButton.disabled = false;
+}
+});     
+     return result;
   };
 })();
 </script>
