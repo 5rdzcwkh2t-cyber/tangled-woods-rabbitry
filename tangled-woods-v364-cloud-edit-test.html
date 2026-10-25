@@ -372,6 +372,8 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
 (function(){
  'use strict';
  let cloudMode=false, cloudRecords=null, localDb=null, loading=false;
+ // Read-only indicator of isolated cloud mode for the editor.
+ window.twIsCloudTestMode = () => cloudMode;
  const baseRender=render, baseNav=nav;
  options.push('Cloud App');
  const originalEdit=edit, originalParentEditor=parentEditor, originalNewBreeding=newBreeding;
@@ -509,7 +511,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
     const result = previousDetail(type, index);
     if (type !== 'rabbits') return result;
     const rabbit = db.rabbits[index];
-    const isCloudDetail = document.getElementById('view')?.dataset.twCloudTest === 'true';
+    const isCloudDetail = window.twIsCloudTestMode?.() === true;
     if (!isCloudDetail ||
         !rabbit || !/^TEST-(?:001|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(rabbit._id || '')) return result;
 
