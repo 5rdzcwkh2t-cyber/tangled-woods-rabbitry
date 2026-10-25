@@ -648,4 +648,138 @@ detail(type, index);
   };
 })();
 </script>
+
+<script id="tw-test-create-rabbit-ui">
+/* Add new rabbits only inside the isolated Cloud App test workspace. */
+(function () {
+  'use strict';
+  const priorRender = render;
+  const fields = ['Name', 'Sex', 'Breed', 'Status'];
+
+  function isCloudTestView() {
+    const banner = document.querySelector('#view > .tw-cloud-app-banner');
+    return page === 'Rabbits' && !!banner &&
+      banner.textContent.includes('CLOUD TEST') &&
+      db && Array.isArray(db.rabbits);
+  }
+
+  function showCreateForm() {
+    if (!isCloudTestView()) return;
+    const view = el('view');
+    view.replaceChildren();
+    const back = document.createElement('button');
+    back.type = 'button';
+    back.textContent = '← Back to cloud rabbits';
+    back.onclick = () => nav('Rabbits');
+    view.append(back);
+
+    const title = document.createElement('h2');
+    title.textContent = 'Add rabbit — TEST DATABASE ONLY';
+    view.append(title);
+    const note = document.createElement('p');
+    note.className = 'tw-cloud-app-banner';
+    note.textContent = 'Creates one new rabbit in the isolated test database. No local records or production records will be changed.';
+    view.append(note);
+
+    const form = document.createElement('form');
+    const controls = {};
+    for (const field of fields) {
+      const label = document.createElement('label');
+      label.textContent = field;
+      let input;
+      if (field === 'Sex') {
+        input = document.createElement('select');
+        for (const [value, text] of [['', 'Choose Buck or Doe'], ['Buck', 'Buck'], ['Doe', 'Doe']]) {
+          const option = document.createElement('option');
+          option.value = value;
+          option.textContent = text;
+          input.append(option);
+        }
+      } else {
+        input = document.createElement('input');
+        input.type = 'text';
+        input.maxLength = 100;
+      }
+      input.name = field;
+      input.required = field === 'Name' || field === 'Sex';
+      label.append(input);
+      form.append(label);
+      controls[field] = input;
+    }
+    const submit = document.createElement('button');
+    submit.type = 'submit';
+    submit.className = 'primary';
+    submit.textContent = 'Create test rabbit';
+    form.append(submit);
+    const status = document.createElement('p');
+    status.setAttribute('role', 'status');
+    form.append(status);
+    view.append(form);
+
+    form.addEventListener('submit', async event => {
+      event.preventDefault();
+      const values = Object.fromEntries(fields.map(field => [field, controls[field].value.trim()]));
+      if (!values.Name || !['Buck', 'Doe'].includes(values.Sex)) {
+        status.textContent = 'Enter a name and choose Buck or Doe.';
+        return;
+      }
+      if (!confirm('Create ' + values.Name + ' in the TEST database?')) return;
+      submit.disabled = true;
+      status.textContent = 'Creating rabbit in test database…';
+      let createdId = null;
+      try {
+        const response = await fetch('/api/test-create-rabbit', {
+          method: 'POST',
+          credentials: 'same-origin',
+          headers: { 'Content-Type': 'application/json', Accept: 'application/json' },
+          body: JSON.stringify(values)
+        });
+        const result = await response.json();
+        if (!response.ok || result.created !== true ||
+            typeof result.rabbit?._id !== 'string' ||
+            !result.rabbit._id.startsWith('TEST-')) {
+          throw new Error(result.error || 'Creation was not confirmed.');
+        }
+        createdId = result.rabbit._id;
+        status.textContent = 'Created. Checking the saved record…';
+        const check = await fetch('/api/rabbits', {
+          credentials: 'same-origin', cache: 'no-store',
+          headers: { Accept: 'application/json' }
+        });
+        if (!check.ok) throw new Error('Verification request failed.');
+        const data = await check.json();
+        if (!Array.isArray(data.rabbits)) throw new Error('Invalid verification response.');
+        const verified = data.rabbits.find(r => r._id === createdId);
+        if (!verified || fields.some(field => String(verified[field] ?? '') !== values[field])) {
+          throw new Error('Saved rabbit did not match the submitted fields.');
+        }
+        db.rabbits = data.rabbits;
+        status.textContent = 'Created and verified: ' + verified.Name + ' (' + createdId + ').';
+        form.querySelectorAll('input, select').forEach(control => control.disabled = true);
+        submit.textContent = 'Rabbit created';
+      } catch (error) {
+        status.textContent = (createdId ? 'Rabbit may have been created. Do not retry yet; reload cloud records first. ' : 'Creation failed: ') + error.message;
+        submit.disabled = !!createdId;
+      }
+    });
+  }
+
+  render = function (...args) {
+    const result = priorRender(...args);
+    if (isCloudTestView()) {
+      const banner = document.querySelector('#view > .tw-cloud-app-banner');
+      if (banner && !document.getElementById('twCreateTestRabbit')) {
+        const button = document.createElement('button');
+        button.id = 'twCreateTestRabbit';
+        button.type = 'button';
+        button.className = 'primary';
+        button.textContent = '+ Add test rabbit';
+        button.onclick = showCreateForm;
+        banner.append(button);
+      }
+    }
+    return result;
+  };
+})();
+</script>
 </body></html>
