@@ -612,7 +612,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
 (function () {
   'use strict';
   const priorRender = render;
-  const fields = ['Name', 'Sex', 'Breed', 'Status'];
+  const fields = ['Prefix', 'Name', 'Sex', 'Tattoo', 'Breed', 'Color', 'DOB', 'Father', 'Mother', 'Weight', 'Status', 'Notes'];;
 
   function isCloudTestView() {
     const banner = document.querySelector('#view > .tw-cloud-app-banner');
