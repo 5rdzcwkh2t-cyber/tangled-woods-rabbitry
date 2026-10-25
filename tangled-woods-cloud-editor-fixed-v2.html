@@ -556,7 +556,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
     saveButton.type = 'submit';
     saveButton.className = 'primary';
     saveButton.textContent = 'Save test rabbit';
-       const archiveButton = document.createElement('button');
+       var archiveButton = document.createElement('button');
 archiveButton.type = 'button';
 archiveButton.textContent = rabbit.Archived === true
   ? 'Restore Rabbit'
