@@ -31,6 +31,7 @@ export async function onRequestPost({ request, env }) {
 
     const body = await request.json();
     const keys = ["Name", "Sex", "Breed", "Status"];
+const optionalKeys = ["Prefix", "Tattoo", "Color", "DOB", "Father", "Mother", "Weight", "Notes"];
     const id = body?._id;
 
        if (
@@ -51,7 +52,17 @@ export async function onRequestPost({ request, env }) {
     ) {
       return reply({ error: "Invalid test rabbit fields" }, 400);
     }
+    const providedOptionalKeys = optionalKeys.filter(
+  key => Object.prototype.hasOwnProperty.call(body, key)
+);
 
+if (providedOptionalKeys.some(key =>
+  typeof body[key] !== "string" ||
+  body[key].length > 100 ||
+  typeof body.expected[key] !== "string"
+)) {
+  return reply({ error: "Invalid optional rabbit fields" }, 400);
+}
     const sex = body.Sex.trim();
     if (!["Buck", "Doe"].includes(sex)) {
       return reply({ error: "Sex must be Buck or Doe" }, 400);
@@ -77,7 +88,9 @@ export async function onRequestPost({ request, env }) {
     }
 
     // Prevent overwriting changes made by another session.
-    if (keys.some(key => body.expected[key] !== (stored[key] || ""))) {
+    if ([...keys, ...providedOptionalKeys].some(key =>
+  body.expected[key] !== (stored[key] ?? "")
+)) {
       return reply({
         error: "Rabbit changed since you opened it. Reload before saving."
       }, 409);
@@ -85,9 +98,10 @@ export async function onRequestPost({ request, env }) {
 
     // Preserve all other existing rabbit fields.
     const rabbit = { ...stored };
-    for (const key of keys) {
-      rabbit[key] = body[key].trim();
-    }
+
+for (const key of [...keys, ...providedOptionalKeys]) {
+  rabbit[key] = body[key].trim();
+}
 
     const updated = await env.DB.prepare(
       "UPDATE rabbits SET name = ?, sex = ?, data = ? WHERE id = ? AND data = ?"
