@@ -1,4 +1,3 @@
-
 export async function onRequestPost({ request, env }) {
   const reply = (body, status = 200) =>
     Response.json(body, {
@@ -12,8 +11,7 @@ export async function onRequestPost({ request, env }) {
   }
 
   // Cloudflare Access must have authenticated the request.
-  const access = request.headers.get("Cf-Access-Jwt-Assertion");
-  if (!access) {
+  if (!request.headers.get("Cf-Access-Jwt-Assertion")) {
     return reply({ error: "Authentication required" }, 401);
   }
 
@@ -33,18 +31,27 @@ export async function onRequestPost({ request, env }) {
 
     const body = await request.json();
     const keys = ["Name", "Sex", "Breed", "Status"];
+    const id = body?._id;
 
-    if (!body || body._id !== "TEST-001" ||
-        !body.expected || typeof body.expected !== "object" ||
+    if (!body || typeof body !== "object" || Array.isArray(body) ||
+        typeof id !== "string" ||
+        !/^TEST-(?:001|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(id) ||
+        !body.expected || typeof body.expected !== "object" || Array.isArray(body.expected) ||
         keys.some(key => typeof body[key] !== "string" ||
           body[key].length > 100 ||
-          (key === "Name" && !body[key].trim()))) {
+          (key === "Name" && !body[key].trim()) ||
+          typeof body.expected[key] !== "string")) {
       return reply({ error: "Invalid test rabbit fields" }, 400);
     }
 
+    const sex = body.Sex.trim();
+    if (!["Buck", "Doe"].includes(sex)) {
+      return reply({ error: "Sex must be Buck or Doe" }, 400);
+    }
+
     const existing = await env.DB.prepare(
-      "SELECT id, name, data FROM rabbits WHERE id = ?"
-    ).bind("TEST-001").first();
+      "SELECT id, name, sex, data FROM rabbits WHERE id = ?"
+    ).bind(id).first();
 
     if (!existing) {
       return reply({ error: "Test rabbit not found" }, 404);
@@ -57,15 +64,12 @@ export async function onRequestPost({ request, env }) {
       return reply({ error: "Stored rabbit data is invalid" }, 409);
     }
 
-    if (!stored || typeof stored !== "object" ||
-        Array.isArray(stored) || stored._id !== "TEST-001") {
+    if (!stored || typeof stored !== "object" || Array.isArray(stored) || stored._id !== id) {
       return reply({ error: "Stored test rabbit ID mismatch" }, 409);
     }
 
     // Prevent overwriting changes made by another session.
-    if (keys.some(key =>
-        typeof body.expected[key] !== "string" ||
-        body.expected[key] !== (stored[key] || ""))) {
+    if (keys.some(key => body.expected[key] !== (stored[key] || ""))) {
       return reply({
         error: "Rabbit changed since you opened it. Reload before saving."
       }, 409);
@@ -78,11 +82,12 @@ export async function onRequestPost({ request, env }) {
     }
 
     const updated = await env.DB.prepare(
-      "UPDATE rabbits SET name = ?, data = ? WHERE id = ? AND data = ?"
+      "UPDATE rabbits SET name = ?, sex = ?, data = ? WHERE id = ? AND data = ?"
     ).bind(
       rabbit.Name,
+      rabbit.Sex,
       JSON.stringify(rabbit),
-      "TEST-001",
+      id,
       existing.data
     ).run();
 
