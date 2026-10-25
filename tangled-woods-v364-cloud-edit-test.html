@@ -397,6 +397,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
  window.twRemovePhoto=function(...args){if(cloudMode)return blocked();return originalPhotoRemove(...args)};
  detail=function(...args){
    const result=originalDetail(...args);hideCloudEditing();
+   if(cloudMode && args[0]==='rabbits')el('view').dataset.twCloudTest='true';
    if(cloudMode && args[0]==='rabbits'){
      const rabbit=db.rabbits[args[1]];
      if(rabbit && rabbit._id==='TEST-001'){
@@ -455,6 +456,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
    return baseNav(p);
  };
  render=function(){
+   delete el('view').dataset.twCloudTest;
    if(page==='Cloud App'&&!cloudMode){
      baseRender();
      const view=el('view');view.replaceChildren();
@@ -507,8 +509,8 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
     const result = previousDetail(type, index);
     if (type !== 'rabbits') return result;
     const rabbit = db.rabbits[index];
-    const banner = document.querySelector('#view > .tw-cloud-app-banner');
-    if (!banner || !banner.textContent.includes('CLOUD TEST') ||
+    const isCloudDetail = document.getElementById('view')?.dataset.twCloudTest === 'true';
+    if (!isCloudDetail ||
         !rabbit || !/^TEST-(?:001|[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12})$/i.test(rabbit._id || '')) return result;
 
     const card = document.querySelector('#view > .card');
