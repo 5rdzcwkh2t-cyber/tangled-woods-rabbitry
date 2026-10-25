@@ -33,8 +33,13 @@ export async function onRequestPost({ request, env }) {
     const keys = ["Name", "Sex", "Breed", "Status"];
 const optionalKeys = ["Prefix", "Tattoo", "Color", "DOB", "Father", "Mother", "Weight", "Notes"];
     const id = body?._id;
-
-       if (
+if (
+  Object.prototype.hasOwnProperty.call(body ?? {}, "Archived") &&
+  typeof body.Archived !== "boolean"
+) {
+  return reply({ error: "Archived must be true or false" }, 400);
+}
+    if (
       !body ||
       typeof body !== "object" ||
       Array.isArray(body) ||
@@ -102,7 +107,9 @@ if (providedOptionalKeys.some(key =>
 for (const key of [...keys, ...providedOptionalKeys]) {
   rabbit[key] = body[key].trim();
 }
-
+if (typeof body.Archived === "boolean") {
+  rabbit.Archived = body.Archived;
+}
     const updated = await env.DB.prepare(
       "UPDATE rabbits SET name = ?, sex = ?, data = ? WHERE id = ? AND data = ?"
     ).bind(
