@@ -35,7 +35,7 @@ export async function onRequestPost({ request, env }) {
     }
 
     const body = await request.json();
-    const keys = ["Name", "Sex", "Breed", "Status"];
+    const keys = ["Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", "DOB", "Father", "Mother", "Weight", "Status", "Notes"];
 
     if (
       !body ||
@@ -59,12 +59,20 @@ export async function onRequestPost({ request, env }) {
     const id = "TEST-" + crypto.randomUUID();
 
     const rabbit = {
-      _id: id,
-      Name: body.Name.trim(),
-      Sex: sex,
-      Breed: body.Breed.trim(),
-      Status: body.Status.trim()
-    };
+  _id: id,
+  Prefix: body.Prefix.trim(),
+  Name: body.Name.trim(),
+  Sex: sex,
+  Tattoo: body.Tattoo.trim(),
+  Breed: body.Breed.trim(),
+  Color: body.Color.trim(),
+  DOB: body.DOB.trim(),
+  Father: body.Father.trim(),
+  Mother: body.Mother.trim(),
+  Weight: body.Weight.trim(),
+  Status: body.Status.trim(),
+  Notes: body.Notes.trim()
+};
 
     // Insert a NEW record. Never overwrite an existing rabbit.
     const result = await env.DB.prepare(
