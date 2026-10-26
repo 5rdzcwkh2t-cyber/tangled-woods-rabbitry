@@ -820,7 +820,72 @@ status.textContent += ' Reload cloud records before trying again.';
   };
 })();
 </script>
-<script id="tw-cloud-initial-nav-refresh">
+<script id="tw-test-create-litter-ui">
+(function () {
+  'use strict';
+
+  const fields = [
+  'Name',
+  'Dam',
+  'Sire',
+  'Bred',
+  'Born',
+  'Total Kits',
+  'Sold Kits',
+  'Died Kits',
+  'Notes'
+];
+function showCreateLitterForm() {
+  const view = document.getElementById('view');
+  if (!view) return;
+
+  view.replaceChildren();
+
+  const title = document.createElement('h2');
+  title.textContent = 'Add Litter — TEST DATABASE ONLY';
+  view.append(title);
+
+  const form = document.createElement('form');
+
+  for (const field of fields) {
+    const label = document.createElement('label');
+    label.textContent = field;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.name = field;
+    input.maxLength = 100;
+
+    label.append(input);
+    form.append(label);
+  }
+
+  view.append(form);
+}
+const priorRender = render;
+
+render = function (...args) {
+  const result = priorRender(...args);
+
+  if (page === 'Litters') {
+    const view = document.getElementById('view');
+
+    if (view && !document.getElementById('twCreateTestLitter')) {
+      const button = document.createElement('button');
+      button.id = 'twCreateTestLitter';
+      button.type = 'button';
+      button.className = 'primary';
+      button.textContent = '+ Add test litter';
+      button.onclick = showCreateLitterForm;
+
+      view.prepend(button);
+    }
+  }
+
+  return result;
+};)();
+</script>
+   <script id="tw-cloud-initial-nav-refresh">
 /* All navigation extensions are installed; display Cloud App on initial load. */
 render();
 </script>
