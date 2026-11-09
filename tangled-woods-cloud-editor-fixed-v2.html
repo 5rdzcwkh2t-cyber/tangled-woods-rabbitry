@@ -952,7 +952,61 @@ render = function (...args) {
 };
 })();
 </script>
-   <script id="tw-cloud-initial-nav-refresh">
+   <script id="tw-cloud-edit-litter">
+"use strict";
+function showEditLitterForm(index) {
+  const litter = db.litters[index];
+  if (!litter || !litter._id) {
+    alert('Please select a saved cloud litter.');
+    return;
+  }
+    const fields = [
+    'Name', 'Dam', 'Sire', 'Bred', 'Born',
+    'Total Kits', 'Sold Kits', 'Died Kits', 'Notes'
+  ];
+    const view = document.getElementById('view');
+  if (!view) return;
+
+  const form = document.createElement('form');
+  form.id = 'twEditLitterForm';
+  form.className = 'card';
+    const inputs = {};
+
+  for (const key of fields) {
+    const label = document.createElement('label');
+    label.textContent = key;
+
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.value = String(litter[key] ?? '');
+
+    label.appendChild(input);
+    form.appendChild(label);
+    inputs[key] = input;
+  }  const actions = document.createElement('div');
+  actions.className = 'row';
+
+  const saveButton = document.createElement('button');
+  saveButton.type = 'submit';
+  saveButton.className = 'primary';
+  saveButton.textContent = 'Save Changes';
+
+  const cancelButton = document.createElement('button');
+  cancelButton.type = 'button';
+  cancelButton.textContent = 'Cancel';
+  cancelButton.onclick = () => render();
+
+  actions.appendChild(saveButton);
+  actions.appendChild(cancelButton);
+  form.appendChild(actions);
+
+    form.addEventListener('submit', (event) => {
+    event.preventDefault();
+  });
+  view.replaceChildren(form);
+}     
+</script>
+  <script id="tw-cloud-initial-nav-refresh">
 /* All navigation extensions are installed; display Cloud App on initial load. */
 render();
 </script>
