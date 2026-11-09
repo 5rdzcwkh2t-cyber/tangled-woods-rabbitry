@@ -483,9 +483,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
      }
      banner.append(line);el('view').prepend(banner);
      hideCloudEditing();
-     for(const button of el('tabs').querySelectorAll('button')){
-       if(!['Rabbits','Litters','Pedigrees','Cloud App'].includes(button.textContent))button.disabled=true;
-     }
+     // Keep navigation tabs enabled; nav() handles leaving cloud mode.
    }
  };
  async function load(){
