@@ -37,20 +37,18 @@ export async function onRequestPost({ request, env }) {
     const body = await request.json();
 
     const keys = [
-      "Prefix",
-      "Name",
-      "Breed",
-      "Father",
-      "Mother",
-      "Bred",
-      "Born",
-      "Total Kits",
-      "Sold Kits",
-      "Died Kits",
-      "Notes"
-    ];
+  "Name",
+  "Dam",
+  "Sire",
+  "Bred",
+  "Born",
+  "Total Kits",
+  "Sold Kits",
+  "Died Kits",
+  "Notes"
+];
 
-    // Validate all 11 fields.
+    // Validate all 9 litter fields.
     if (
       !body ||
       typeof body !== "object" ||
