@@ -862,7 +862,70 @@ function showCreateLitterForm() {
     label.append(input);
     form.append(label);
   }
+const saveButton = document.createElement('button');
+saveButton.type = 'submit';
+saveButton.className = 'primary';
+saveButton.textContent = 'Save Test Litter';
+form.append(saveButton);
 
+const status = document.createElement('p');
+form.append(status);
+
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  const litter = {};
+  for (const field of fields) {
+    litter[field] = form.elements.namedItem(field).value.trim();
+  }
+
+  saveButton.disabled = true;
+  status.textContent = 'Saving litter to test database...';
+
+  try {
+    const response = await fetch('/api/test-create-litter', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify(litter)
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || result.created !== true) {
+      throw new Error(result.error || 'Litter creation failed');
+    }
+
+    const check = await fetch('/api/litters', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' }
+    });
+
+    if (!check.ok) {
+      throw new Error('Litter saved, but verification failed');
+    }
+
+    const data = await check.json();
+    const verified = data.litters?.find(
+      item => item._id === result.litter._id
+    );
+
+    if (!verified) {
+      throw new Error('Litter saved, but was not found during verification');
+    }
+
+    db.litters.push(verified);
+    status.textContent = 'Test litter saved and verified successfully.';
+    saveButton.textContent = 'Saved';
+  } catch (error) {
+    status.textContent = 'Save issue: ' + error.message;
+    saveButton.disabled = false;
+  }
+});  
   view.append(form);
 }
 const priorRender = render;
