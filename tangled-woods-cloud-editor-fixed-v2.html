@@ -838,10 +838,32 @@ status.textContent += ' Reload cloud records before trying again.';
   'Died Kits',
   'Notes'
 ];
-function showCreateLitterForm() {
+async function showCreateLitterForm() {
+  let parentRabbits = [];
   const view = document.getElementById('view');
   if (!view) return;
+try {
+    const response = await fetch('/api/rabbits', {
+        credentials: 'same-origin',
+        cache: 'no-store'
+    });
 
+    if (!response.ok) {
+        throw new Error('Unable to load rabbit records');
+    }
+
+    const data = await response.json();
+
+    if (!Array.isArray(data.rabbits)) {
+        throw new Error('Invalid rabbit records');
+    }
+
+    parentRabbits = data.rabbits;
+} catch (error) {
+    console.error('Could not load parent rabbits:', error);
+    alert('Unable to load rabbit records. Please try again.');
+    return;
+}
   view.replaceChildren();
 
   const title = document.createElement('h2');
@@ -853,12 +875,35 @@ function showCreateLitterForm() {
   for (const field of fields) {
     const label = document.createElement('label');
     label.textContent = field;
-
-    const input = document.createElement('input');
-    input.type = 'text';
+const isParentField = field === 'Dam' || field === 'Sire';
+const input = document.createElement(isParentField ? 'select' : 'input');
+    
     input.name = field;
-    input.maxLength = 100;
 
+if (!isParentField) {
+    input.type = 'text';
+    input.maxLength = 100;
+}
+if (isParentField) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = field === 'Dam' ? 'Choose a doe...' : 'Choose a buck...';
+    input.append(option);
+const requiredSex = field === 'Dam' ? 'Doe' : 'Buck';
+
+const eligibleRabbits = parentRabbits.filter(rabbit =>
+    rabbit.Sex === requiredSex &&
+    rabbit.Archived !== true
+);
+
+for (const rabbit of eligibleRabbits) {
+    const choice = document.createElement('option');
+    choice.value = rabbit.Name;
+    choice.textContent = rabbit.Name +
+        (rabbit.Tattoo ? ' (' + rabbit.Tattoo + ')' : '');
+    input.append(choice);
+  }
+}
     label.append(input);
     form.append(label);
   }
