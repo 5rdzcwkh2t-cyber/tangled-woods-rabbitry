@@ -1004,7 +1004,22 @@ function showEditLitterForm(index) {
     event.preventDefault();
   });
   view.replaceChildren(form);
-}     
+}
+     const originalLitterDetail = detail;
+
+detail = function(type, i) {
+  originalLitterDetail(type, i);
+
+  if (type !== 'litters') return;
+
+  const view = document.getElementById('view');
+  const editButton = view?.querySelector('button[onclick^="edit("]');
+
+  if (editButton) {
+    editButton.textContent = 'Edit Cloud Litter';
+    editButton.onclick = () => showEditLitterForm(i);
+  }
+};
 </script>
   <script id="tw-cloud-initial-nav-refresh">
 /* All navigation extensions are installed; display Cloud App on initial load. */
