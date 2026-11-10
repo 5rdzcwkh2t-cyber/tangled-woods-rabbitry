@@ -1000,9 +1000,75 @@ function showEditLitterForm(index) {
   actions.appendChild(cancelButton);
   form.appendChild(actions);
 
-    form.addEventListener('submit', (event) => {
-    event.preventDefault();
-  });
+    
+form.addEventListener('submit', async (event) => {
+  event.preventDefault();
+
+  saveButton.disabled = true;
+  saveButton.textContent = 'Saving...';
+
+  const expected = Object.fromEntries(
+    fields.map(key => [key, litter[key] ?? ''])
+  );
+
+  const changes = Object.fromEntries(
+    fields.map(key => [key, inputs[key].value.trim()])
+  );
+
+  try {
+    const response = await fetch('/api/test-save-litter', {
+      method: 'POST',
+      credentials: 'same-origin',
+      headers: {
+        'Content-Type': 'application/json',
+        Accept: 'application/json'
+      },
+      body: JSON.stringify({
+        _id: litter._id,
+        ...changes,
+        expected
+      })
+    });
+
+    const result = await response.json();
+
+    if (!response.ok || result.saved !== true) {
+      throw new Error(result.error || 'Save failed');
+    }
+
+    const check = await fetch('/api/litters', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' }
+    });
+
+    if (!check.ok) {
+      throw new Error('Could not verify saved litter');
+    }
+
+    const data = await check.json();
+    const verified = data.litters?.find(
+      item => item._id === litter._id
+    );
+
+    if (!verified || fields.some(
+      key => verified[key] !== changes[key]
+    )) {
+      throw new Error('Saved data could not be verified');
+    }
+
+    db.litters[index] = verified;
+    alert('Litter changes saved and verified.');
+    render();
+
+  } catch (error) {
+    alert('Save issue: ' + error.message);
+  } finally {
+    saveButton.disabled = false;
+    saveButton.textContent = 'Save Changes';
+  }
+});
+
   view.replaceChildren(form);
 }
      const originalLitterDetail = detail;
