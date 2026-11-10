@@ -898,7 +898,7 @@ const eligibleRabbits = parentRabbits.filter(rabbit =>
 
 for (const rabbit of eligibleRabbits) {
     const choice = document.createElement('option');
-    choice.value = rabbit.Name;
+    choice.value = rabbit._id;
     choice.textContent = rabbit.Name +
         (rabbit.Tattoo ? ' (' + rabbit.Tattoo + ')' : '');
     input.append(choice);
@@ -920,9 +920,26 @@ form.addEventListener('submit', async (event) => {
   event.preventDefault();
 
   const litter = {};
-  for (const field of fields) {
-    litter[field] = form.elements.namedItem(field).value.trim();
-  }
+
+for (const field of fields) {
+  litter[field] = form.elements.namedItem(field).value.trim();
+}
+
+for (const [field, idField] of [
+  ['Dam', 'DamID'],
+  ['Sire', 'SireID']
+]) {
+  const selectedID = litter[field];
+
+  const rabbit = parentRabbits.find(r =>
+    r._id === selectedID &&
+    r.Sex === (field === 'Dam' ? 'Doe' : 'Buck') &&
+    r.Archived !== true
+  );
+
+  litter[idField] = rabbit?._id || '';
+  litter[field] = rabbit?.Name || '';
+}
 
   saveButton.disabled = true;
   status.textContent = 'Saving litter to test database...';

@@ -40,6 +40,8 @@ export async function onRequestPost({ request, env }) {
   "Name",
   "Dam",
   "Sire",
+  "DamID",
+  "SireID",
   "Bred",
   "Born",
   "Total Kits",
@@ -47,7 +49,6 @@ export async function onRequestPost({ request, env }) {
   "Died Kits",
   "Notes"
 ];
-
     // Validate all 9 litter fields.
     if (
       !body ||
@@ -61,7 +62,43 @@ export async function onRequestPost({ request, env }) {
     ) {
       return reply({ error: "Invalid litter fields" }, 400);
     }
+// Verify both parents against the test database.
+for (const [field, idField, requiredSex] of [
+  ["Dam", "DamID", "Doe"],
+  ["Sire", "SireID", "Buck"]
+]) {
+  const parentID = body[idField];
 
+  if (!parentID) {
+    return reply({ error: `${field} must be selected` }, 400);
+  }
+
+  const record = await env.DB.prepare(
+    "SELECT data FROM rabbits WHERE id = ?"
+  ).bind(parentID).first();
+
+  if (!record) {
+    return reply({ error: `Selected ${field} was not found` }, 400);
+  }
+
+  let parent;
+
+  try {
+    parent = JSON.parse(record.data);
+  } catch {
+    return reply({ error: `Invalid ${field} record` }, 400);
+  }
+
+  if (
+    !parent ||
+    parent._id !== parentID ||
+    parent.Sex !== requiredSex ||
+    parent.Archived === true ||
+    parent.Name !== body[field]
+  ) {
+    return reply({ error: `Invalid ${field} selection` }, 400);
+  }
+}
     // Use a unique ID to avoid overwriting existing records.
     const id = "TEST-LITTER-" + crypto.randomUUID();
 

@@ -30,9 +30,9 @@ export async function onRequestPost({ request, env }) {
 
     const body = await request.json();
     const keys = [
-      "Name", "Dam", "Sire", "Bred", "Born",
-      "Total Kits", "Sold Kits", "Died Kits", "Notes"
-    ];
+  "Name", "Dam", "Sire", "Bred", "Born",
+  "Total Kits", "Sold Kits", "Died Kits", "Notes"
+];
 
     if (
       !body ||
@@ -84,7 +84,15 @@ export async function onRequestPost({ request, env }) {
         error: "Litter changed since you opened it. Reload before saving."
       }, 409);
     }
-
+// Prevent parent names from changing without updating parent IDs.
+if (
+  (stored.DamID && body.Dam !== stored.Dam) ||
+  (stored.SireID && body.Sire !== stored.Sire)
+) {
+  return reply({
+    error: "Changing litter parents is not supported yet."
+  }, 400);
+}
     const litter = { ...stored };
     for (const key of keys) {
       litter[key] = body[key].trim();
