@@ -1013,12 +1013,12 @@ detail = function(type, i) {
   if (type !== 'litters') return;
 
   const view = document.getElementById('view');
-  const editButton = view?.querySelector('button[onclick^="edit("]');
-
-  if (editButton) {
-    editButton.textContent = 'Edit Cloud Litter';
-    editButton.onclick = () => showEditLitterForm(i);
-  }
+  const editButton = document.createElement('button');
+editButton.type = 'button';
+editButton.className = 'primary';
+editButton.textContent = 'Edit Cloud Litter';
+editButton.onclick = () => showEditLitterForm(i);
+view.appendChild(editButton);
 };
 </script>
   <script id="tw-cloud-initial-nav-refresh">
