@@ -9,7 +9,17 @@ const KEY='tangledwoods-data-v2';let db;try{db=JSON.parse(localStorage.getItem(K
 if(page==='Breeding')breeding();if(page==='Rabbits')listing('rabbits');if(page==='Litters')listing('litters');if(page==='Pedigrees')v.innerHTML=`<h2>Pedigree viewer</h2><p class="muted">Choose a rabbit to view its parents and known ancestors. Names that cannot be matched remain as text.</p><input id="search" placeholder="Search rabbit name or tattoo" oninput="filterPed(this.value)"><div id="results"></div>`;if(page==='Pedigrees')filterPed('');if(page==='Import')v.innerHTML=`<h2>Import Everbreed CSV</h2><div class="card"><p>Choose an Everbreed <strong>Rabbits/Breeders</strong> or <strong>Litters</strong> CSV. The file is read on this device only; it is not uploaded to GitHub or a server.</p><label>Import type<select id="importType" onchange="if(el('importFile').files.length)previewCSV()"><option value="rabbits">Rabbits / Breeders</option><option value="litters">Litters</option></select></label><label>Choose CSV<input id="importFile" type="file" accept=".csv,text/csv" onchange="previewCSV()"></label><div id="importPreview" class="muted">Select a file to preview it before importing.</div></div><div class="card"><h3>Before importing</h3><p>Use Backup → Download backup first. Import replaces records of the selected type on this device; the other type remains unchanged. Existing edits in that category will be replaced.</p><p class="muted">No cloud syncing yet. Repeat import on another device if needed, or transfer a JSON backup.</p></div>`;
 if(page==='Backup')v.innerHTML=`<h2>Data & backups</h2><div class="card"><p>Export a complete JSON backup after edits. Store it somewhere safe, such as Files or iCloud Drive.</p><button class="primary" onclick="backup()">Download backup</button><h3>Restore backup</h3><input type="file" accept="application/json,.json" onchange="restore(event)"><p class="muted">Restoring replaces all current records on this device.</p></div><div class="card"><h3>Important</h3><p>This prototype saves data in this browser. Clearing website data may erase changes. iPhone and iPad do not sync yet.</p></div>`;}
 function listing(type){let isR=type==='rabbits';el('view').innerHTML=`<div class="row"><h2>${isR?'Rabbits':'Litters'}</h2><button class="primary" onclick="edit('${type}',-1)">+ Add</button></div><input id="search" placeholder="Search by name, breed, tattoo, parent..." value="${esc(query)}" oninput="filterList('${type}',this.value)"><div class="muted" id="count"></div><div id="results"></div>`;filterList(type,query)}function filterList(type,q){query=q;let a=db[type].map((x,i)=>({...x,__index:i})).filter(x =>
-  (type !== 'rabbits' || x.Archived !== true) &&
+  (type !== 'rabbits' ||
+  (window.twIsCloudTestMode?.() === true
+    ? (
+        window.twCloudRabbitArchiveFilter === 'all' ||
+        (window.twCloudRabbitArchiveFilter === 'archived'
+          ? x.Archived === true
+          : x.Archived !== true)
+      )
+    : x.Archived !== true
+  )
+) &&
   Object.values(x).some(v =>
     String(v).toLowerCase().includes(q.toLowerCase())
   )
@@ -379,6 +389,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
  let cloudMode=false, cloudRecords=null, localDb=null, loading=false;
  // Read-only indicator of isolated cloud mode for the editor.
  window.twIsCloudTestMode = () => cloudMode;
+ window.twCloudRabbitArchiveFilter = 'active';
  const baseRender=render, baseNav=nav;
  options.push('Cloud App');
  const originalEdit=edit, originalParentEditor=parentEditor, originalNewBreeding=newBreeding;
@@ -482,6 +493,41 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
        const b=document.createElement('button');b.type='button';b.textContent=label;b.onclick=()=>nav(target);line.append(b);
      }
      banner.append(line);el('view').prepend(banner);
+
+if (page === 'Rabbits') {
+  const filters = document.createElement('div');
+  filters.className = 'row no-print';
+  filters.style.justifyContent = 'flex-start';
+  filters.style.flexWrap = 'wrap';
+  filters.style.gap = '8px';
+  filters.style.margin = '12px 0';
+
+  const current = window.twCloudRabbitArchiveFilter || 'active';
+
+  for (const [label, value] of [
+    ['Active', 'active'],
+    ['Archived', 'archived'],
+    ['All', 'all']
+  ]) {
+    const button = document.createElement('button');
+    button.type = 'button';
+    button.textContent = label;
+
+    if (current === value) {
+      button.className = 'primary';
+    }
+
+    button.onclick = () => {
+      window.twCloudRabbitArchiveFilter = value;
+      render();
+    };
+
+    filters.append(button);
+  }
+
+  banner.after(filters);
+}
+
      hideCloudEditing();
      // Keep navigation tabs enabled; nav() handles leaving cloud mode.
    }
