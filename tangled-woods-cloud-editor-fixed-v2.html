@@ -1016,16 +1016,54 @@ render = function (...args) {
 </script>
    <script id="tw-cloud-edit-litter">
 "use strict";
-function showEditLitterForm(index) {
+async function showEditLitterForm(index) {
+  
+  if (window.twIsCloudTestMode?.() !== true) {
+    alert('Litter editing is only available in Cloud Test Mode.');
+    return;
+  }
+
   const litter = db.litters[index];
   if (!litter || !litter._id) {
     alert('Please select a saved cloud litter.');
     return;
   }
+ 
+  let parentRabbits;
+
+  try {
+    const response = await fetch('/api/rabbits', {
+      credentials: 'same-origin',
+      cache: 'no-store',
+      headers: { Accept: 'application/json' }
+    });
+
+    if (!response.ok) {
+      throw new Error('Unable to load rabbit records');
+    }
+
+    const data = await response.json();
+
+    if (!Array.isArray(data.rabbits)) {
+      throw new Error('Invalid rabbit records');
+    }
+
+    parentRabbits = data.rabbits;
+  } catch (error) {
+    alert('Could not load parent rabbits: ' + error.message);
+    return;
+  }
+
     const fields = [
     'Name', 'Dam', 'Sire', 'Bred', 'Born',
     'Total Kits', 'Sold Kits', 'Died Kits', 'Notes'
   ];
+  
+const parentFields = {
+  Dam: { idField: 'DamID', sex: 'Doe' },
+  Sire: { idField: 'SireID', sex: 'Buck' }
+};
+
     const view = document.getElementById('view');
   if (!view) return;
 
@@ -1038,9 +1076,38 @@ function showEditLitterForm(index) {
     const label = document.createElement('label');
     label.textContent = key;
 
-    const input = document.createElement('input');
-    input.type = 'text';
-    input.value = String(litter[key] ?? '');
+   
+const isParent = key === 'Dam' || key === 'Sire';
+const input = document.createElement(isParent ? 'select' : 'input');
+
+if (isParent) {
+  const { idField, sex } = parentFields[key];
+
+  const blank = document.createElement('option');
+  blank.value = '';
+  blank.textContent = 'Choose ' + (key === 'Dam' ? 'a doe' : 'a buck');
+  input.append(blank);
+
+  for (const rabbit of parentRabbits) {
+    if (
+      rabbit.Sex !== sex ||
+      (rabbit.Archived === true && rabbit._id !== litter[idField])
+    ) continue;
+
+    const option = document.createElement('option');
+    option.value = rabbit._id;
+    option.textContent = rabbit.Name +
+      (rabbit.Tattoo ? ' (' + rabbit.Tattoo + ')' : '');
+    input.append(option);
+  }
+
+  input.value = String(litter[idField] ?? '');
+  input.required = true;
+} else {
+  input.type = 'text';
+  input.maxLength = 100;
+  input.value = String(litter[key] ?? '');
+}
 
     label.appendChild(input);
     form.appendChild(label);
@@ -1069,13 +1136,40 @@ form.addEventListener('submit', async (event) => {
   saveButton.disabled = true;
   saveButton.textContent = 'Saving...';
 
-  const expected = Object.fromEntries(
-    fields.map(key => [key, litter[key] ?? ''])
-  );
+  
+const expected = Object.fromEntries(
+  [...fields, 'DamID', 'SireID'].map(key => [
+    key,
+    String(litter[key] ?? '')
+  ])
+);
+
 
   const changes = Object.fromEntries(
     fields.map(key => [key, inputs[key].value.trim()])
   );
+
+for (const [field, idField, sex] of [
+  ['Dam', 'DamID', 'Doe'],
+  ['Sire', 'SireID', 'Buck']
+]) {
+  const selectedID = inputs[field].value;
+
+  const rabbit = parentRabbits.find(r =>
+    r._id === selectedID &&
+    r.Sex === sex
+  );
+
+  if (!rabbit) {
+    alert('Please select a valid ' + field + '.');
+    saveButton.disabled = false;
+    saveButton.textContent = 'Save Changes';
+    return;
+  }
+
+  changes[field] = rabbit.Name;
+  changes[idField] = rabbit._id;
+}
 
   try {
     const response = await fetch('/api/test-save-litter', {
@@ -1113,11 +1207,13 @@ form.addEventListener('submit', async (event) => {
       item => item._id === litter._id
     );
 
-    if (!verified || fields.some(
-      key => verified[key] !== changes[key]
-    )) {
-      throw new Error('Saved data could not be verified');
-    }
+   
+if (!verified || [...fields, 'DamID', 'SireID'].some(
+  key => verified[key] !== changes[key]
+)) {
+  throw new Error('Saved data could not be verified');
+}
+
 
     db.litters[index] = verified;
     alert('Litter changes saved and verified.');
@@ -1138,7 +1234,12 @@ form.addEventListener('submit', async (event) => {
 detail = function(type, i) {
   originalLitterDetail(type, i);
 
-  if (type !== 'litters') return;
+ 
+  if (
+    type !== 'litters' ||
+    window.twIsCloudTestMode?.() !== true
+  ) return;
+
 
   const view = document.getElementById('view');
   const editButton = document.createElement('button');
