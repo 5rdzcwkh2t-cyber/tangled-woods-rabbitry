@@ -30,8 +30,9 @@ export async function onRequestPost({ request, env }) {
 
     const body = await request.json();
     const keys = [
-  "Name", "Dam", "Sire", "Bred", "Born",
-  "Total Kits", "Sold Kits", "Died Kits", "Notes"
+  "Name", "Dam", "Sire", "DamID", "SireID",
+  "Bred", "Born", "Total Kits", "Sold Kits",
+  "Died Kits", "Notes"
 ];
 
     if (
@@ -78,21 +79,60 @@ export async function onRequestPost({ request, env }) {
     }
 
     if (keys.some(key =>
-      body.expected[key] !== (stored[key] ?? "")
-    )) {
+  body.expected[key] !== String(stored[key] ?? "")
+)) {
       return reply({
         error: "Litter changed since you opened it. Reload before saving."
       }, 409);
     }
-// Prevent parent names from changing without updating parent IDs.
-if (
-  (stored.DamID && body.Dam !== stored.Dam) ||
-  (stored.SireID && body.Sire !== stored.Sire)
-) {
-  return reply({
-    error: "Changing litter parents is not supported yet."
-  }, 400);
+
+// Verify the selected dam and sire against the test rabbit records.
+for (const [field, idField, requiredSex] of [
+  ["Dam", "DamID", "Doe"],
+  ["Sire", "SireID", "Buck"]
+]) {
+  const parentID = body[idField];
+
+  if (!parentID || !body[field]) {
+    return reply({
+      error: field + " and its permanent ID are required."
+    }, 400);
+  }
+
+  const parentRow = await env.DB.prepare(
+    "SELECT data FROM rabbits WHERE id = ?"
+  ).bind(parentID).first();
+
+  if (!parentRow) {
+    return reply({
+      error: "Selected " + field + " was not found."
+    }, 400);
+  }
+
+  let parent;
+  try {
+    parent = JSON.parse(parentRow.data);
+  } catch {
+    return reply({
+      error: "Selected parent record is invalid."
+    }, 409);
+  }
+
+  if (
+    !parent ||
+    parent._id !== parentID ||
+    parent.Sex !== requiredSex ||
+    
+(parent.Archived === true && parentID !== String(stored[idField] ?? "")) ||
+
+    parent.Name !== body[field]
+  ) {
+    return reply({
+      error: "Selected " + field + " does not match a valid rabbit."
+    }, 400);
+  }
 }
+
     const litter = { ...stored };
     for (const key of keys) {
       litter[key] = body[key].trim();
