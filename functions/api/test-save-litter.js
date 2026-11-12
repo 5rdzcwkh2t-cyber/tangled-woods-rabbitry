@@ -93,6 +93,15 @@ for (const [field, idField, requiredSex] of [
 ]) {
   const parentID = body[idField];
 
+if (!parentID && !String(stored[idField] ?? "")) {
+  if (body[field] !== String(stored[field] ?? "")) {
+    return reply({
+      error: "Cannot change historical " + field + " without selecting a rabbit."
+    }, 400);
+  }
+  continue;
+}
+
   if (!parentID || !body[field]) {
     return reply({
       error: field + " and its permanent ID are required."
@@ -122,9 +131,6 @@ for (const [field, idField, requiredSex] of [
     !parent ||
     parent._id !== parentID ||
     parent.Sex !== requiredSex ||
-    
-(parent.Archived === true && parentID !== String(stored[idField] ?? "")) ||
-
     parent.Name !== body[field]
   ) {
     return reply({

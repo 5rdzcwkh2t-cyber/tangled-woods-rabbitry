@@ -1088,31 +1088,37 @@ if (isParent) {
   blank.textContent = 'Choose ' + (key === 'Dam' ? 'a doe' : 'a buck');
   input.append(blank);
 
-  for (const rabbit of parentRabbits) {
-    if (
-      rabbit.Sex !== sex ||
-      (rabbit.Archived === true && rabbit._id !== litter[idField])
-    ) continue;
+
+for (const rabbit of parentRabbits) {
+  if (rabbit.Sex !== sex) continue;
+
 
     const option = document.createElement('option');
     option.value = rabbit._id;
-    option.textContent = rabbit.Name +
-      (rabbit.Tattoo ? ' (' + rabbit.Tattoo + ')' : '');
-    input.append(option);
-  }
 
-  input.value = String(litter[idField] ?? '');
-  input.required = true;
+option.textContent = rabbit.Name +
+  (rabbit.Tattoo ? ' (' + rabbit.Tattoo + ')' : '') +
+  (rabbit.Archived === true ? ' (Archived)' : '');
+
+    input.append(option);
+}
+input.value = String(litter[idField] ?? '');
+input.required = Boolean(litter[idField]);
+
 } else {
   input.type = 'text';
   input.maxLength = 100;
   input.value = String(litter[key] ?? '');
 }
 
-    label.appendChild(input);
-    form.appendChild(label);
-    inputs[key] = input;
-  }  const actions = document.createElement('div');
+
+label.appendChild(input);
+form.appendChild(label);
+inputs[key] = input;
+}
+
+const actions = document.createElement('div');
+
   actions.className = 'row';
 
   const saveButton = document.createElement('button');
@@ -1154,6 +1160,12 @@ for (const [field, idField, sex] of [
   ['Sire', 'SireID', 'Buck']
 ]) {
   const selectedID = inputs[field].value;
+
+if (!selectedID && !litter[idField]) {
+  changes[field] = String(litter[field] ?? '');
+  changes[idField] = '';
+  continue;
+}
 
   const rabbit = parentRabbits.find(r =>
     r._id === selectedID &&
