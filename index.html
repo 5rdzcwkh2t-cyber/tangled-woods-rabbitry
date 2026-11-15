@@ -1207,7 +1207,7 @@ status.textContent += ' Reload cloud records before trying again.';
         if (!verified || fields.some(field => String(verified[field] ?? '') !== values[field])) {
           throw new Error('Saved rabbit did not match the submitted fields.');
         }
-        db.rabbits = data.rabbits;
+
         status.textContent = 'Created and verified: ' + verified.Name + ' (' + createdId + ').';
         form.querySelectorAll('input, select').forEach(control => control.disabled = true);
         submit.textContent = 'Rabbit created';
@@ -3441,8 +3441,8 @@ render();
     const popup=window.open('','_blank');
     if(!popup){alert('Your browser blocked the print window. Allow pop-ups for this file and try again.');return;}
     const page='<!doctype html><html lang="en"><head><meta charset="utf-8"><title>Tangled Woods Rabbitry - Sales Receipt</title>'+
-      '<style>@page{size:letter;margin:0.75in}html,body,*{caret-color:transparent!important}body{font-family:Arial,sans-serif;color:#222;max-width:680px;margin:30px auto;line-height:1.55}h3{font-size:24px;margin:0 0 4px}h4{font-size:17px;border-bottom:1px solid #bbb;padding-bottom:12px;margin:0 0 18px}p{margin:7px 0}p:last-child{border-top:1px solid #bbb;padding-top:12px} @media print{body{margin:0}}</style></head><body>'+receipt.innerHTML+'
-</body></html>';
+      '<style>@page{size:letter;margin:0.75in}html,body,*{caret-color:transparent!important}body{font-family:Arial,sans-serif;color:#222;max-width:680px;margin:30px auto;line-height:1.55}h3{font-size:24px;margin:0 0 4px}h4{font-size:17px;border-bottom:1px solid #bbb;padding-bottom:12px;margin:0 0 18px}p{margin:7px 0}p:last-child{border-top:1px solid #bbb;padding-top:12px} @media print{body{margin:0}}</style></head><body>'+receipt.innerHTML+
+      '</body></html>';
     popup.document.open();popup.document.write(page);popup.document.close();
     popup.focus();
     if(popup.document.activeElement && typeof popup.document.activeElement.blur==='function')popup.document.activeElement.blur();
