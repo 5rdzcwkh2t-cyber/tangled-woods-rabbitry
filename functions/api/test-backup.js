@@ -1,6 +1,6 @@
 
 const ACCESS_TEAM_DOMAIN = "red-tree-a71a.cloudflareaccess.com";
-const ACCESS_AUD = "155af5f22e02d037f8bda482d01c906aa49d6d7fd6a7d09e7245b4435234fe61";
+const ACCESS_AUD = "c3143ac8f2c8734b7a35152c0b28415f57018387c3c1e467b3d49bd38e9e9a0";
 
 async function verifyAccessToken(request) {
   
