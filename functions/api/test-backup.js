@@ -3,8 +3,19 @@ const ACCESS_TEAM_DOMAIN = "red-tree-a71a.cloudflareaccess.com";
 const ACCESS_AUD = "155af5f22e02d037f8bda482d01c906aa49d6d7fd6a7d09e7245b4435234fe61";
 
 async function verifyAccessToken(request) {
-  const token = request.headers.get("Cf-Access-Jwt-Assertion");
+  
+  const assertion = request.headers.get("Cf-Access-Jwt-Assertion");
+
+  const cookies = request.headers.get("Cookie") || "";
+  const accessCookie = cookies.split(";")
+    .map(cookie => cookie.trim())
+    .find(cookie => cookie.startsWith("CF_Authorization="));
+
+  const token = assertion ||
+    (accessCookie ? accessCookie.substring("CF_Authorization=".length) : null);
+
   if (!token) return false;
+
 
   try {
     const issuer = `https://${ACCESS_TEAM_DOMAIN}`;
