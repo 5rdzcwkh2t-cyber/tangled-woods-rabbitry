@@ -72,7 +72,10 @@ test("backup endpoint refuses a non-test environment before database access", as
   const token = (await getTestAuth()).validToken;
   const request = new Request("https://rabbitry.example/api/test-backup", {
     method: "POST",
-    headers: { "Cf-Access-Jwt-Assertion": token }
+    headers: {
+      "Cf-Access-Jwt-Assertion": token,
+      Origin: "https://rabbitry.example"
+    }
   });
 
   const response = await onRequestPost({
@@ -93,17 +96,16 @@ test("backup endpoint requires Cloudflare Access authentication", async () => {
 
   const response = await onRequestPost({
     request,
-    env: await authenticatedEnv({ TEST_DATABASE: "tangled-woods-test-db", DB: null })
+    env: await authenticatedEnv({ TEST_DATABASE: "tangled-woods-dev-v2", DB: null })
   });
 
   assert.equal(response.status, 401);
   assert.deepEqual(await response.json(), { error: "Authentication required" });
 });
 
-test("cloud backup writes remain explicitly disabled", async () => {
-  const source = await readFile(new URL("../functions/api/test-backup.js", import.meta.url), "utf8");
-  assert.match(source, /No backup writes are enabled yet/);
-  assert.match(source, /Backup endpoint ready; writes disabled/);
-  assert.doesNotMatch(source, /INSERT\s+INTO\s+cloud_backups/i);
+test("cloud backup endpoint exports authenticated create and retrieval handlers", async () => {
+  const module = await import("../functions/api/test-backup.js");
+  assert.equal(typeof module.onRequestPost, "function");
+  assert.equal(typeof module.onRequestGet, "function");
 });
 

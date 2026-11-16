@@ -1,0 +1,24 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "tangled-woods-rabbitry-dev-v2",
+  "pages_build_output_dir": ".",
+  "compatibility_date": "2026-11-15",
+
+  // SAFETY: tangled-woods-dev-v2 exists and migrations 001-003 are applied.
+  // Keep this committed example free of real database IDs and Access values.
+  // Copy it to the Git-ignored wrangler.dev-v2.jsonc for authorized operations.
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "tangled-woods-dev-v2",
+      "database_id": "REPLACE_WITH_NEW_TANGLED_WOODS_DEV_V2_DATABASE_UUID",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "vars": {
+    "TEST_DATABASE": "tangled-woods-dev-v2",
+    "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "REPLACE_WITH_PREVIEW_ACCESS_TEAM_DOMAIN",
+    "CLOUDFLARE_ACCESS_AUD": "REPLACE_WITH_PREVIEW_ACCESS_AUDIENCE"
+  }
+}

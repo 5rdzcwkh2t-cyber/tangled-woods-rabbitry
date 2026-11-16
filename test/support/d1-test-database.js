@@ -63,7 +63,7 @@ export async function createTestDatabase() {
   return {
     database,
     env: await authenticatedEnv({
-      TEST_DATABASE: "tangled-woods-test-db",
+      TEST_DATABASE: "tangled-woods-dev-v2",
       DB: new D1DatabaseAdapter(database)
     }),
     accessToken: auth.validToken,

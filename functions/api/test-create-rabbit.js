@@ -12,7 +12,7 @@ export async function onRequestPost({ request, env }) {
   if (unauthorized) return unauthorized;
 
   // Only allow this endpoint in the test environment.
-  if (env.TEST_DATABASE !== "tangled-woods-test-db") {
+  if (env.TEST_DATABASE !== "tangled-woods-dev-v2") {
     return reply({ error: "Test environment not configured" }, 403);
   }
 
@@ -26,7 +26,7 @@ export async function onRequestPost({ request, env }) {
     // Verify that DB points to the test database.
     const marker = await env.DB.prepare(
       "SELECT marker FROM test_environment WHERE marker = ?"
-    ).bind("tangled-woods-test-db").first();
+    ).bind("tangled-woods-dev-v2").first();
 
     if (!marker) {
       return reply({ error: "Test database verification failed" }, 403);

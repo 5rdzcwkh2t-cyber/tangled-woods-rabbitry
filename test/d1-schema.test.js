@@ -21,10 +21,21 @@ test("all migrations reconstruct the evidenced cloud test tables and index", asy
     assert.equal(names.get(table), "table", `missing ${table} table`);
   }
   assert.equal(names.get("idx_cloud_backups_created"), "index");
+  assert.equal(names.get("idx_cloud_backups_owner_created"), "index");
+
+  const backupColumns = fixture.database.prepare(
+    "PRAGMA table_info(cloud_backups)"
+  ).all().map(column => column.name);
+  for (const column of [
+    "id", "created_at", "device_id", "backup_data",
+    "owner_id", "format_version", "byte_size"
+  ]) {
+    assert.ok(backupColumns.includes(column), `missing cloud_backups.${column}`);
+  }
 
   assert.equal(
     fixture.database.prepare("SELECT marker FROM test_environment").get().marker,
-    "tangled-woods-test-db"
+    "tangled-woods-dev-v2"
   );
 });
 

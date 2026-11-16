@@ -27,7 +27,9 @@ test("valid signed Access JWT is accepted from header and compatibility cookie",
 test("missing and forged Access tokens are rejected without details", async () => {
   const auth = await getTestAuth();
   const env = await authenticatedEnv();
-  const forged = auth.validToken.slice(0, -1) + (auth.validToken.endsWith("A") ? "B" : "A");
+  const tokenParts = auth.validToken.split(".");
+  tokenParts[2] = (tokenParts[2][0] === "A" ? "B" : "A") + tokenParts[2].slice(1);
+  const forged = tokenParts.join(".");
 
   assert.equal((await verifyAccessJwt(request(null), env)).reason, "missing");
   assert.equal((await verifyAccessJwt(request(forged), env)).reason, "invalid");

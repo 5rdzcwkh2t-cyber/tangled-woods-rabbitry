@@ -2,6 +2,7 @@
 .wrangler/
 .dev.vars
 .dev.vars.*
+wrangler.dev-v2.jsonc
 
 # Local environment files and secrets
 .env

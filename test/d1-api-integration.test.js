@@ -318,6 +318,12 @@ test("write endpoints remain isolated by environment, authentication, and origin
   }), 403);
   assert.equal(wrongEnvironment.error, "Test environment not configured");
 
+  const legacyEnvironment = await json(await createRabbit({
+    request: post("test-create-rabbit", rabbitFields()),
+    env: { ...fixture.env, TEST_DATABASE: "tangled-woods-test-db" }
+  }), 403);
+  assert.equal(legacyEnvironment.error, "Test environment not configured");
+
   const unauthenticated = await json(await createRabbit({
     request: post("test-create-rabbit", rabbitFields(), { "Cf-Access-Jwt-Assertion": "" }),
     env: fixture.env

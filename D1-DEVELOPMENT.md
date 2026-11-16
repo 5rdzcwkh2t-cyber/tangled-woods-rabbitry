@@ -21,12 +21,14 @@ The schema is based only on SQL statements in `functions/api`:
 | `rabbits` | `id`, `name`, `sex`, `data` | Create, list, parent lookup, and optimistic rabbit update endpoints. |
 | `litters` | `id`, `data` | Create, list, and optimistic litter update endpoints. |
 | `breedings` | `id`, `data` | Create, authenticated list, and update endpoints. |
-| `test_environment` | `marker` | Every test write and the breeding read verify `tangled-woods-test-db`. |
-| `cloud_backups` | `id`, `created_at`, `device_id`, `backup_data` | Existing migration; backup writes remain disabled. |
+| `test_environment` | `marker` | Every test write and the breeding read verify `tangled-woods-dev-v2`. |
+| `cloud_backups` | `id`, `created_at`, `device_id`, `backup_data`, `owner_id`, `format_version`, `byte_size` | Append-only, authenticated backup creation and owner-filtered retrieval. |
 
-Primary keys create SQLite's automatic unique indexes. The only explicit repository-evidenced index is `idx_cloud_backups_created` on `cloud_backups(created_at)`.
+Primary keys create SQLite's automatic unique indexes. Backups have the original `idx_cloud_backups_created` index plus `idx_cloud_backups_owner_created` for owner-filtered retention and retrieval.
 
 `002_cloud_test_schema.sql` adds primary keys, required columns, the two endpoint-supported rabbit sex values, and valid-JSON-object checks. It seeds only the non-sensitive test-environment marker. It does not seed rabbitry records.
+
+The clean development environment is named `tangled-woods-dev-v2`. Both the `TEST_DATABASE` variable and the marker row must use that exact value. The previous `tangled-woods-test-db` database is intentionally incompatible with these guards and remains preserved as a legacy test database.
 
 ## Relationships and assumptions
 
@@ -34,8 +36,18 @@ Primary keys create SQLite's automatic unique indexes. The only explicit reposit
 - Litter parent relationships are JSON properties: `DamID` and `SireID`.
 - Breeding parent relationships are JSON properties: `doeId` and `buckId`.
 - Because parent IDs are not SQL columns, the current schema cannot declare foreign keys. Endpoint validation supplies the current relationship checks.
-- No timestamps, owners, revisions, soft-delete columns, or production tenancy model were inferred because repository evidence does not establish them.
+- Rabbit, litter, and breeding tables still have no inferred timestamps, owners, revisions, soft-delete columns, or production tenancy model because repository evidence does not establish them. Backup ownership is limited to the verified Access subject required for isolation.
 - The migration reconstructs the isolated cloud test schema. It is not presented as a complete or authoritative production schema.
+
+## Cloud backup behavior
+
+`POST /api/test-backup` accepts `{ "deviceId": "...", "backup": { ... } }`. The backup document uses the existing complete local export shape: required `rabbits` and `litters`, with optional `breedings`, `parentLinks`, `expenses`, `photos`, `photoBackupVersion`, `exportedAt`, and future related JSON fields. Known collections and the existing IndexedDB photo/gallery representation are validated before insertion.
+
+Backups are append-only and stored as format version 1. The endpoint never restores records. Payloads are limited to 1,800,000 UTF-8 bytes to stay below the practical single-row D1 limit with operational headroom. Larger photo collections still require local file backups or future object storage.
+
+`GET /api/test-backup` lists metadata for the authenticated owner. `GET /api/test-backup?id=<id>` retrieves one complete backup belonging to that owner. The verified Access `sub` claim is stored as the opaque owner identifier and included in every query. A different authenticated identity receives an empty list or 404, not another owner's data.
+
+The newest 20 backups per owner are retained. Creation always inserts a new row; it never overwrites an earlier backup. Retention failures do not discard a successfully inserted backup and are reported by `retentionApplied: false`. Rows created before ownership was added have a null owner and are intentionally inaccessible until an explicit, separately reviewed migration policy exists.
 
 ## Safety and Wrangler
 

@@ -37,6 +37,8 @@ The smoke tests verify:
 - Invalid requests, parent validation, environment isolation, and existing optimistic conflicts are rejected.
 - Access JWT signature, issuer, audience, expiration, header, and compatibility-cookie handling.
 - Authenticated reads and optimistic breeding-update conflicts.
+- Append-only cloud backup creation, metadata listing, complete retrieval, owner isolation, validation, size limits, retention, and database failure responses.
+- Cloud Backup browser enhancement loading, size formatting, complete-photo collection hooks, download-only history, and local-backup fallback wiring.
 
 These tests do not contact Cloudflare, modify D1, open a browser, deploy the application, or alter rabbitry data.
 

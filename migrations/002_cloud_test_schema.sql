@@ -4,11 +4,11 @@
 
 CREATE TABLE IF NOT EXISTS test_environment (
     marker TEXT PRIMARY KEY
-        CHECK (marker = 'tangled-woods-test-db')
+        CHECK (marker = 'tangled-woods-dev-v2')
 );
 
 INSERT OR IGNORE INTO test_environment (marker)
-VALUES ('tangled-woods-test-db');
+VALUES ('tangled-woods-dev-v2');
 
 CREATE TABLE IF NOT EXISTS rabbits (
     id TEXT PRIMARY KEY,
