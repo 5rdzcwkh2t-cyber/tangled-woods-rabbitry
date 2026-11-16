@@ -19,6 +19,8 @@ test("application shell contains the critical local-first features", async () =>
   assert.match(html, /indexedDB\.open/);
   assert.match(html, /Edit \$\{type==='rabbits'\?'Rabbit':'Litter'\}/);
   assert.match(html, /\['\+ Add','Edit','Edit Rabbit','Delete'/);
+  assert.match(html, /<h3>Verify a backup<\/h3>/);
+  assert.match(html, /id="twBackupVerifyFile"/);
   assert.match(html, /serviceWorker\.register\('\.\/sw\.js'\)/);
 
   for (const section of [

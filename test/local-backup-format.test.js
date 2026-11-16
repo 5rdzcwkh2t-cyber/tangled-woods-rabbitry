@@ -15,7 +15,7 @@ async function format() {
 
 function completeBackup(overrides = {}) {
   return {
-    rabbits: [{ _id: "r-1", Name: "Maple", kitPayments: [{ amountCents: 2500 }] }],
+    rabbits: [{ _id: "r-1", Name: "Maple", Sex: "Doe", kitPayments: [{ amountCents: 2500 }] }],
     litters: [{ _id: "l-1", kits: [{ rabbitId: "r-1" }] }],
     breedings: [{ _id: "b-1", doeId: "r-1" }],
     parentLinks: { "r-1|Father": { kind: "text", label: "Clover" } },
@@ -71,4 +71,53 @@ test("restore validation rejects unknown or malformed data instead of discarding
     () => helper.prepareRestoreCandidate(completeBackup({ photos: { "r-1": "invalid" } })),
     /Photographs are invalid/
   );
+});
+
+test("verification reports valid backup counts including pedigree links and photos", async () => {
+  const helper = await format();
+  const result = helper.verifyBackup(completeBackup());
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.counts)), {
+    rabbits: 1,
+    litters: 1,
+    breedings: 1,
+    pedigreeLinks: 1,
+    expenses: 1,
+    photographs: 2
+  });
+  assert.deepEqual(JSON.parse(JSON.stringify(result.errors)), []);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.warnings)), []);
+});
+
+test("verification returns blocking errors for malformed backups and duplicate IDs", async () => {
+  const helper = await format();
+  const malformed = helper.verifyBackup({ rabbits: "invalid", litters: [] });
+  assert.equal(malformed.valid, false);
+  assert.match(malformed.errors[0], /Rabbits must be an array/);
+
+  const duplicate = helper.verifyBackup(completeBackup({
+    rabbits: [{ _id: "same" }, { _id: "same" }],
+    litters: [], breedings: [], parentLinks: {}, expenses: [], photos: {}
+  }));
+  assert.equal(duplicate.valid, false);
+  assert.ok(duplicate.errors.includes("Duplicate rabbit ID: same."));
+});
+
+test("verification reports missing relationship references as non-blocking warnings", async () => {
+  const helper = await format();
+  const result = helper.verifyBackup(completeBackup({
+    rabbits: [{ _id: "r-1", Sex: "Doe", litterId: "missing-litter" }],
+    litters: [{ _id: "l-1", DamID: "missing-dam", SireID: "r-1" }],
+    breedings: [{ _id: "b-1", doeId: "r-1", buckId: "missing-buck" }],
+    parentLinks: { "r-1|Father": { kind: "record", id: "missing-father" } },
+    expenses: [], photos: {}
+  }));
+
+  assert.equal(result.valid, true);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.errors)), []);
+  assert.ok(result.warnings.some(message => message.includes("missing litter missing-litter")));
+  assert.ok(result.warnings.some(message => message.includes("missing rabbit missing-dam")));
+  assert.ok(result.warnings.some(message => message.includes("missing rabbit missing-buck")));
+  assert.ok(result.warnings.some(message => message.includes("missing rabbit missing-father")));
 });
