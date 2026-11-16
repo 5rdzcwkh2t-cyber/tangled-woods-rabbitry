@@ -118,15 +118,27 @@ test("missing authentication and forged tokens cannot create or retrieve backups
   tokenParts[2] = (tokenParts[2][0] === "A" ? "B" : "A") + tokenParts[2].slice(1);
   const forged = tokenParts.join(".");
 
-  for (const token of ["", forged]) {
-    const create = await json(await onRequestPost({
-      request: postRequest(token, { deviceId: "test", backup: backupDocument() }),
-      env: fixture.env
-    }), 401);
-    assert.equal(create.error, "Authentication required");
-    const list = await json(await onRequestGet({ request: getRequest(token), env: fixture.env }), 401);
-    assert.equal(list.error, "Authentication required");
+  const diagnostics = [];
+  const originalWarn = console.warn;
+  console.warn = code => diagnostics.push(code);
+  try {
+    for (const token of ["", forged]) {
+      const create = await json(await onRequestPost({
+        request: postRequest(token, { deviceId: "test", backup: backupDocument() }),
+        env: fixture.env
+      }), 401);
+      assert.equal(create.error, "Authentication required");
+      const list = await json(await onRequestGet({ request: getRequest(token), env: fixture.env }), 401);
+      assert.equal(list.error, "Authentication required");
+    }
+  } finally {
+    console.warn = originalWarn;
   }
+  assert.deepEqual(diagnostics, [
+    "access_jwt_missing_token", "access_jwt_missing_token",
+    "access_jwt_signature_failure", "access_jwt_signature_failure"
+  ]);
+  assert.doesNotMatch(JSON.stringify(diagnostics), /integration-test-user|eyJ/);
 });
 
 test("one authenticated identity cannot list or retrieve another owner's backup", async (t) => {

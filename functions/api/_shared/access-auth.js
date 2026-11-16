@@ -1,6 +1,25 @@
 const CERT_CACHE_MS = 5 * 60 * 1000;
 const certCache = new Map();
 
+const DIAGNOSTIC = Object.freeze({
+  missing: "access_jwt_missing_token",
+  malformed: "access_jwt_malformed_token",
+  algorithm: "access_jwt_unsupported_algorithm",
+  jwks: "access_jwt_jwks_fetch_failure",
+  key: "access_jwt_signing_key_missing",
+  signature: "access_jwt_signature_failure",
+  issuer: "access_jwt_issuer_mismatch",
+  audience: "access_jwt_audience_mismatch",
+  expired: "access_jwt_expired_token",
+  notYetValid: "access_jwt_not_yet_valid_token",
+  unexpected: "access_jwt_unexpected_verification_error"
+});
+
+function reject(reason, code, options) {
+  (options.logger || console.warn)(code);
+  return { ok: false, reason };
+}
+
 function response(body, status) {
   return Response.json(body, {
     status,
@@ -78,21 +97,38 @@ export async function verifyAccessJwt(request, env, options = {}) {
   if (!issuer || audiences.length === 0) return { ok: false, reason: "configuration" };
 
   const token = requestToken(request);
-  if (!token) return { ok: false, reason: "missing" };
+  if (!token) return reject("missing", DIAGNOSTIC.missing, options);
 
   try {
     const parts = token.split(".");
-    if (parts.length !== 3) return { ok: false, reason: "invalid" };
-
-    const header = decodeJson(parts[0]);
-    const payload = decodeJson(parts[1]);
-    if (header.alg !== "RS256" || typeof header.kid !== "string") {
-      return { ok: false, reason: "invalid" };
+    if (parts.length !== 3 || parts.some(part => !part)) {
+      return reject("invalid", DIAGNOSTIC.malformed, options);
     }
 
-    const keys = await accessKeys(issuer, env, options.fetcher || fetch);
+    let header;
+    let payload;
+    try {
+      header = decodeJson(parts[0]);
+      payload = decodeJson(parts[1]);
+    } catch {
+      return reject("invalid", DIAGNOSTIC.malformed, options);
+    }
+    if (!header || typeof header !== "object" || !payload || typeof payload !== "object" ||
+        Array.isArray(header) || Array.isArray(payload) || typeof header.kid !== "string") {
+      return reject("invalid", DIAGNOSTIC.malformed, options);
+    }
+    if (header.alg !== "RS256") {
+      return reject("invalid", DIAGNOSTIC.algorithm, options);
+    }
+
+    let keys;
+    try {
+      keys = await accessKeys(issuer, env, options.fetcher || fetch);
+    } catch {
+      return reject("invalid", DIAGNOSTIC.jwks, options);
+    }
     const keyData = keys.find(key => key.kid === header.kid && key.kty === "RSA");
-    if (!keyData) return { ok: false, reason: "invalid" };
+    if (!keyData) return reject("invalid", DIAGNOSTIC.key, options);
 
     const key = await crypto.subtle.importKey(
       "jwk",
@@ -107,25 +143,23 @@ export async function verifyAccessJwt(request, env, options = {}) {
       decodeBase64Url(parts[2]),
       new TextEncoder().encode(`${parts[0]}.${parts[1]}`)
     );
+    if (!validSignature) return reject("invalid", DIAGNOSTIC.signature, options);
 
     const now = Math.floor((options.now ?? Date.now()) / 1000);
     const tokenAudiences = Array.isArray(payload.aud) ? payload.aud : [payload.aud];
     const validAudience = audiences.some(audience => tokenAudiences.includes(audience));
-
-    if (
-      !validSignature ||
-      payload.iss !== issuer ||
-      !validAudience ||
-      typeof payload.exp !== "number" ||
-      payload.exp <= now ||
-      (payload.nbf !== undefined && (typeof payload.nbf !== "number" || payload.nbf > now))
-    ) {
-      return { ok: false, reason: "invalid" };
+    if (payload.iss !== issuer) return reject("invalid", DIAGNOSTIC.issuer, options);
+    if (!validAudience) return reject("invalid", DIAGNOSTIC.audience, options);
+    if (typeof payload.exp !== "number") return reject("invalid", DIAGNOSTIC.malformed, options);
+    if (payload.exp <= now) return reject("invalid", DIAGNOSTIC.expired, options);
+    if (payload.nbf !== undefined && typeof payload.nbf !== "number") {
+      return reject("invalid", DIAGNOSTIC.malformed, options);
     }
+    if (payload.nbf > now) return reject("invalid", DIAGNOSTIC.notYetValid, options);
 
     return { ok: true, payload };
   } catch {
-    return { ok: false, reason: "invalid" };
+    return reject("invalid", DIAGNOSTIC.unexpected, options);
   }
 }
 
