@@ -495,7 +495,7 @@ function backup(){let blob=new Blob([JSON.stringify({...db,exportedAt:new Date()
    const view=el('view');if(!view)return;
    for(const button of view.querySelectorAll('button')){
      const label=button.textContent.trim();
-   if(['+ Add','Edit','Delete','Verify / correct parents','Remove photo','+ New breeding','Save record','Save parent corrections'].includes(label))button.remove();
+   if(['+ Add','Edit','Edit Rabbit','Delete','Verify / correct parents','Remove photo','+ New breeding','Save record','Save parent corrections'].includes(label))button.remove();
    }
    for(const input of view.querySelectorAll('input[type="file"]'))input.remove();
    for(const label of view.querySelectorAll('label')){

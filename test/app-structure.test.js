@@ -16,6 +16,8 @@ test("application shell contains the critical local-first features", async () =>
   assert.match(html, /const KEY='tangledwoods-data-v2'/);
   assert.match(html, /localStorage\.getItem\(KEY\)/);
   assert.match(html, /indexedDB\.open/);
+  assert.match(html, /Edit \$\{type==='rabbits'\?'Rabbit':'Litter'\}/);
+  assert.match(html, /\['\+ Add','Edit','Edit Rabbit','Delete'/);
   assert.match(html, /serviceWorker\.register\('\.\/sw\.js'\)/);
 
   for (const section of [
