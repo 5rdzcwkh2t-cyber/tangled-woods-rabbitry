@@ -10,6 +10,9 @@ test("application shell contains the critical local-first features", async () =>
   assert.match(html, /<link rel="manifest" href="manifest\.webmanifest">/);
   assert.match(html, /<script src="seed\.js"><\/script>/);
   assert.match(html, /<script src="cloud-backup-ui\.js"><\/script>/);
+  assert.match(html, /\.tabs\{flex-wrap:wrap;overflow:visible/);
+  assert.match(html, /@media\(min-width:1024px\)/);
+  assert.match(html, /@media\(max-width:600px\)/);
   assert.match(html, /const KEY='tangledwoods-data-v2'/);
   assert.match(html, /localStorage\.getItem\(KEY\)/);
   assert.match(html, /indexedDB\.open/);
