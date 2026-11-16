@@ -9,6 +9,7 @@ test("application shell contains the critical local-first features", async () =>
 
   assert.match(html, /<link rel="manifest" href="manifest\.webmanifest">/);
   assert.match(html, /<script src="seed\.js"><\/script>/);
+  assert.match(html, /<script src="local-backup-format\.js"><\/script>/);
   assert.match(html, /<script src="cloud-backup-ui\.js"><\/script>/);
   assert.match(html, /\.tabs\{flex-wrap:wrap;overflow:visible/);
   assert.match(html, /@media\(min-width:1024px\)/);
@@ -54,6 +55,7 @@ test("service worker caches the application shell", async () => {
   for (const asset of [
     "./index.html",
     "./seed.js",
+    "./local-backup-format.js",
     "./cloud-backup-ui.js",
     "./manifest.webmanifest",
     "./icon-192.png",

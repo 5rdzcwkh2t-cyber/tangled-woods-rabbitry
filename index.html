@@ -2195,6 +2195,7 @@ render();
   };
 })();
 </script>
+<script src="local-backup-format.js"></script>
 <script>
 /* Step 101: Photo-inclusive backup and restore. Photos live in IndexedDB. */
 (function(){
@@ -2203,24 +2204,10 @@ render();
  async function readPhotos(){const d=await openDB();try{return await new Promise((resolve,reject)=>{const photos={};const t=d.transaction(STORE,'readonly');const c=t.objectStore(STORE).openCursor();c.onsuccess=()=>{const x=c.result;if(x){photos[String(x.key)]=x.value;x.continue()}};t.oncomplete=()=>resolve(photos);t.onerror=()=>reject(t.error);t.onabort=()=>reject(t.error)})}finally{d.close()}}
  async function writePhotos(photos){const d=await openDB();try{await new Promise((resolve,reject)=>{const t=d.transaction(STORE,'readwrite');const s=t.objectStore(STORE);s.clear();Object.entries(photos).forEach(([key,value])=>s.put(value,key));t.oncomplete=resolve;t.onerror=()=>reject(t.error);t.onabort=()=>reject(t.error)})}finally{d.close()}}
  function download(obj){const blob=new Blob([JSON.stringify(obj,null,2)],{type:'application/json'}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download='tangled-woods-full-backup-'+new Date().toISOString().slice(0,10)+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),10000)}
- function isPhotoData(value){return typeof value==='string'&&/^data:image\/(jpeg|png|webp);base64,/i.test(value)}
- function validatePhotoBackup(photos){
-  if(!photos||typeof photos!=='object'||Array.isArray(photos))return false;
-  return Object.entries(photos).every(([key,value])=>{
-   if(key.startsWith('gallery:')){
-    if(typeof value!=='string')return false;
-    try{const items=JSON.parse(value);return Array.isArray(items)&&items.length<=9&&items.every(isPhotoData)}catch{return false}
-   }
-   return isPhotoData(value);
-  });
- }
- function photoCount(photos){return Object.entries(photos||{}).reduce((total,[key,value])=>{
-  if(key.startsWith('gallery:')){try{const items=JSON.parse(value);return total+(Array.isArray(items)?items.length:0)}catch{return total}}
-  return total+1;
- },0)}
- async function exportFull(){const status=document.getElementById('twPhotoBackupStatus');try{status.textContent='Collecting records and photographs…';const photos=await readPhotos();download({...db,photos,photoBackupVersion:1,exportedAt:new Date().toISOString()});status.textContent=`Backup downloaded with ${photoCount(photos)} photograph(s). Keep the JSON file somewhere safe.`}catch(e){status.textContent='Backup failed: '+e.message}}
+ const {prepareRestoreCandidate,photoCount}=window.twLocalBackupFormat;
+ async function exportFull(){const status=document.getElementById('twPhotoBackupStatus');try{status.textContent='Collecting records and photographs…';const photos=await readPhotos();const backup={...db,photos,photoBackupVersion:1,exportedAt:new Date().toISOString()};prepareRestoreCandidate(backup);download(backup);status.textContent=`Backup downloaded with ${photoCount(photos)} photograph(s). Keep the JSON file somewhere safe.`}catch(e){status.textContent='Backup failed: '+e.message}}
  let candidate=null;
- async function previewFull(e){const status=document.getElementById('twPhotoRestoreStatus'),btn=document.getElementById('twPhotoRestoreButton');candidate=null;btn.disabled=true;btn.classList.remove('primary');const file=e.target.files?.[0];if(!file){status.textContent='Choose a JSON backup file.';return}try{if(file.size>100*1024*1024)throw Error('File exceeds 100 MB.');const x=JSON.parse(await file.text());if(!x||!Array.isArray(x.rabbits)||!Array.isArray(x.litters)||x.rabbits.some(v=>!v||typeof v!=='object'||Array.isArray(v))||x.litters.some(v=>!v||typeof v!=='object'||Array.isArray(v)))throw Error('Invalid rabbit or litter records.');if(x.breedings!==undefined&&!Array.isArray(x.breedings))throw Error('Invalid breedings.');if(x.parentLinks!==undefined&&(!x.parentLinks||typeof x.parentLinks!=='object'||Array.isArray(x.parentLinks)))throw Error('Invalid parent links.');if(x.photos!==undefined&&!validatePhotoBackup(x.photos))throw Error('Invalid photographs.');candidate={records:{rabbits:x.rabbits,litters:x.litters,breedings:x.breedings||[],parentLinks:x.parentLinks||{}},photos:x.photos};status.textContent=`Ready: ${x.rabbits.length} rabbits, ${x.litters.length} litters, ${photoCount(x.photos)} photographs. ${x.photos===undefined?'Older backup: existing photos will be left unchanged.':'Photos will replace photos currently on this device.'}`;btn.disabled=false;btn.removeAttribute('disabled');btn.classList.add('primary')}catch(err){status.textContent='Cannot restore: '+err.message}}
+ async function previewFull(e){const status=document.getElementById('twPhotoRestoreStatus'),btn=document.getElementById('twPhotoRestoreButton');candidate=null;btn.disabled=true;btn.classList.remove('primary');const file=e.target.files?.[0];if(!file){status.textContent='Choose a JSON backup file.';return}try{if(file.size>100*1024*1024)throw Error('File exceeds 100 MB.');const x=JSON.parse(await file.text());candidate=prepareRestoreCandidate(x);status.textContent=`Ready: ${candidate.records.rabbits.length} rabbits, ${candidate.records.litters.length} litters, ${candidate.records.breedings.length} breedings, ${candidate.records.expenses.length} expenses, ${photoCount(candidate.photos)} photographs. ${candidate.photos===undefined?'Older backup: existing photos will be left unchanged.':'Photos will replace photos currently on this device.'}`;btn.disabled=false;btn.removeAttribute('disabled');btn.classList.add('primary')}catch(err){status.textContent='Cannot restore: '+err.message}}
  async function restoreFull(){if(!candidate)return;const status=document.getElementById('twPhotoRestoreStatus');if(!confirm('Replace all local rabbitry records'+(candidate.photos?' AND photographs':'')+' with this backup? Save a current backup first.'))return;const previousRecords=localStorage.getItem(KEY);let previousPhotos=null;try{if(candidate.photos!==undefined){previousPhotos=await readPhotos();await writePhotos(candidate.photos)}localStorage.setItem(KEY,JSON.stringify(candidate.records));db=candidate.records;candidate=null;nav('Home');alert('Records'+(previousPhotos!==null?' and photographs':'')+' restored.')}catch(e){try{if(previousPhotos!==null)await writePhotos(previousPhotos);if(previousRecords===null)localStorage.removeItem(KEY);else localStorage.setItem(KEY,previousRecords)}catch(rollbackError){alert('Restore failed and automatic rollback was incomplete. Do not clear browser data; keep your backup file. '+rollbackError.message);return}status.textContent='Restore failed; original data was retained: '+e.message}}
  function enhance(){
   if(page!=='Backup')return;
@@ -2230,7 +2217,7 @@ render();
   view.innerHTML=`<h2>Backup & restore</h2>
     <div class="card" id="twFullBackup">
       <h3>1. Back up my rabbitry</h3>
-      <p>Download all rabbit records, litters, breeding history, pedigree links, and photographs into one JSON file.</p>
+      <p>Download all rabbit records, litters, breeding history, pedigree links, expenses, and photographs into one JSON file.</p>
       <button type="button" class="primary" id="twPhotoBackupButton">Download complete backup</button>
       <p class="muted" id="twPhotoBackupStatus" role="status"></p>
     </div>
