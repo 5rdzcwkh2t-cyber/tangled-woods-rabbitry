@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { createTestDatabase, insertRabbit } from "./support/d1-test-database.js";
-import { getTestAuth } from "./support/access-test-auth.js";
+import { authenticatedEnv, getTestAuth } from "./support/access-test-auth.js";
 import { onRequestGet as readRabbits } from "../functions/api/rabbits.js";
 import { onRequestGet as readLitters } from "../functions/api/litters.js";
 import { onRequestGet as readBreedings } from "../functions/api/breedings.js";
@@ -103,6 +103,80 @@ function seedParents(database) {
   insertRabbit(database, parents.doe);
   insertRabbit(database, parents.buck);
 }
+
+const readEndpoints = [
+  ["rabbits", readRabbits],
+  ["litters", readLitters],
+  ["breedings", readBreedings]
+];
+
+function get(path, token = accessToken) {
+  return new Request(`${origin}/api/${path}`, {
+    headers: token ? { "Cf-Access-Jwt-Assertion": token } : {}
+  });
+}
+
+test("operational reads require authentication before database access", async () => {
+  for (const [path, read] of readEndpoints) {
+    let queries = 0;
+    const response = await read({
+      request: get(path, ""),
+      env: await authenticatedEnv({
+        TEST_DATABASE: "tangled-woods-dev-v2",
+        DB: { prepare() { queries += 1; throw new Error("unexpected query"); } }
+      })
+    });
+    assert.equal(response.status, 401, path);
+    assert.deepEqual(await response.json(), { error: "Authentication required" }, path);
+    assert.equal(queries, 0, path);
+  }
+});
+
+test("operational reads reject an incorrect database before database access", async () => {
+  for (const [path, read] of readEndpoints) {
+    let queries = 0;
+    const response = await read({
+      request: get(path),
+      env: await authenticatedEnv({
+        TEST_DATABASE: "production",
+        DB: { prepare() { queries += 1; throw new Error("unexpected query"); } }
+      })
+    });
+    assert.equal(response.status, 403, path);
+    assert.deepEqual(await response.json(), { error: "Test environment not configured" }, path);
+    assert.equal(queries, 0, path);
+  }
+});
+
+test("operational reads reject missing or incorrect database markers without reading records", async () => {
+  for (const marker of [null, { marker: "unexpected" }]) {
+    for (const [path, read] of readEndpoints) {
+      const statements = [];
+      const response = await read({
+        request: get(path),
+        env: await authenticatedEnv({
+          TEST_DATABASE: "tangled-woods-dev-v2",
+          DB: {
+            prepare(sql) {
+              statements.push(sql);
+              assert.match(sql, /test_environment/);
+              return {
+                bind(value) {
+                  assert.equal(value, "tangled-woods-dev-v2");
+                  return this;
+                },
+                first: async () => marker
+              };
+            }
+          }
+        })
+      });
+      assert.equal(response.status, 403, `${path}: ${JSON.stringify(marker)}`);
+      assert.deepEqual(await response.json(), { error: "Test database verification failed" });
+      assert.equal(statements.length, 1, path);
+    }
+  }
+});
 
 test("rabbit create, read, and edit execute against migrated SQLite", async (t) => {
   const fixture = await createTestDatabase();

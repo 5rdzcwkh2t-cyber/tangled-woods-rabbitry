@@ -48,8 +48,15 @@ test("rabbit read endpoint converts D1 JSON rows into records", async () => {
   const { onRequestGet } = await import("../functions/api/rabbits.js");
   const rabbit = { _id: "r-1", Name: "Maple", Sex: "Doe" };
   const env = await authenticatedEnv({
+    TEST_DATABASE: "tangled-woods-dev-v2",
     DB: {
-      prepare() {
+      prepare(sql) {
+        if (sql.includes("test_environment")) {
+          return {
+            bind() { return this; },
+            first: async () => ({ marker: "tangled-woods-dev-v2" })
+          };
+        }
         return { all: async () => ({ results: [{ data: JSON.stringify(rabbit) }] }) };
       }
     }

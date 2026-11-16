@@ -1,4 +1,5 @@
 import { requireAccess } from "./_shared/access-auth.js";
+import { requireTestEnvironment } from "./_shared/test-environment.js";
 
 export async function onRequestGet({ request, env }) {
   const reply = (body, status = 200) =>
@@ -10,20 +11,9 @@ export async function onRequestGet({ request, env }) {
   const unauthorized = await requireAccess(request, env);
   if (unauthorized) return unauthorized;
 
-  // Only allow access to our designated test database.
-  if (env.TEST_DATABASE !== "tangled-woods-dev-v2") {
-    return reply({ error: "Test environment not configured" }, 403);
-  }
-
   try {
-    // Verify the test database identity.
-    const marker = await env.DB.prepare(
-      "SELECT marker FROM test_environment WHERE marker = ?"
-    ).bind("tangled-woods-dev-v2").first();
-
-    if (!marker) {
-      return reply({ error: "Test database verification failed" }, 403);
-    }
+    const invalidEnvironment = await requireTestEnvironment(env);
+    if (invalidEnvironment) return invalidEnvironment;
 
     // Retrieve breeding records.
     const { results } = await env.DB.prepare(
