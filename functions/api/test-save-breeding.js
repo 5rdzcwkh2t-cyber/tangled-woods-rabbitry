@@ -1,3 +1,4 @@
+import { requireAccess } from "./_shared/access-auth.js";
 
 export async function onRequestPost({ request, env }) {
   const reply = (body, status = 200) =>
@@ -6,14 +7,12 @@ export async function onRequestPost({ request, env }) {
       headers: { "Cache-Control": "no-store" }
     });
 
+  const unauthorized = await requireAccess(request, env);
+  if (unauthorized) return unauthorized;
+
   // Only permit operations in the test environment.
   if (env.TEST_DATABASE !== "tangled-woods-test-db") {
     return reply({ error: "Test environment not configured" }, 403);
-  }
-
-  // Require Cloudflare Access authentication.
-  if (!request.headers.get("Cf-Access-Jwt-Assertion")) {
-    return reply({ error: "Authentication required" }, 401);
   }
 
   // Reject requests originating from another website.
@@ -47,9 +46,13 @@ export async function onRequestPost({ request, env }) {
       Array.isArray(body) ||
       typeof body._id !== "string" ||
       !body._id.startsWith("TEST-BREEDING-") ||
+      !body.expected ||
+      typeof body.expected !== "object" ||
+      Array.isArray(body.expected) ||
       fields.some(field =>
         typeof body[field] !== "string" ||
-        body[field].length > 1000
+        body[field].length > 1000 ||
+        typeof body.expected[field] !== "string"
       )
     ) {
       return reply({ error: "Invalid breeding record" }, 400);
@@ -102,6 +105,13 @@ export async function onRequestPost({ request, env }) {
 ) {
   return reply({ error: "Invalid existing breeding record" }, 500);
 }
+    if (fields.some(field =>
+      body.expected[field] !== String(originalBreeding[field] ?? "")
+    )) {
+      return reply({
+        error: "Breeding changed since you opened it. Reload before saving."
+      }, 409);
+    }
     // Verify both parents against the test database.
     for (const [field, sex] of [
       ["doeId", "Doe"],
@@ -148,11 +158,13 @@ export async function onRequestPost({ request, env }) {
     };
 
     const result = await env.DB.prepare(
-      "UPDATE breedings SET data = ? WHERE id = ?"
-    ).bind(JSON.stringify(breeding), body._id).run();
+      "UPDATE breedings SET data = ? WHERE id = ? AND data = ?"
+    ).bind(JSON.stringify(breeding), body._id, existing.data).run();
 
     if (result.meta?.changes !== 1) {
-      return reply({ error: "Breeding was not updated" }, 500);
+      return reply({
+        error: "Breeding changed during save. Reload before trying again."
+      }, 409);
     }
 
     return reply({ updated: true, breeding });

@@ -1,3 +1,4 @@
+import { requireAccess } from "./_shared/access-auth.js";
 
 
 export async function onRequestPost({ request, env }) {
@@ -7,15 +8,12 @@ export async function onRequestPost({ request, env }) {
       headers: { "Cache-Control": "no-store" }
     });
 
+  const unauthorized = await requireAccess(request, env);
+  if (unauthorized) return unauthorized;
+
   // Never allow this endpoint outside our test environment.
   if (env.TEST_DATABASE !== "tangled-woods-test-db") {
     return reply({ error: "Test environment not configured" }, 403);
-  }
-
-  // Require Cloudflare Access authentication.
-  const access = request.headers.get("Cf-Access-Jwt-Assertion");
-  if (!access) {
-    return reply({ error: "Authentication required" }, 401);
   }
 
   // Only accept requests from our own website.

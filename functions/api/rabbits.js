@@ -1,5 +1,9 @@
 
-export async function onRequestGet({ env }) {
+import { requireAccess } from "./_shared/access-auth.js";
+
+export async function onRequestGet({ request, env }) {
+  const unauthorized = await requireAccess(request, env);
+  if (unauthorized) return unauthorized;
   try {
     const { results } = await env.DB.prepare(
       "SELECT data FROM rabbits ORDER BY id"

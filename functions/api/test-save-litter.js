@@ -1,3 +1,4 @@
+import { requireAccess } from "./_shared/access-auth.js";
 
 export async function onRequestPost({ request, env }) {
   const reply = (body, status = 200) =>
@@ -6,12 +7,11 @@ export async function onRequestPost({ request, env }) {
       headers: { "Cache-Control": "no-store" }
     });
 
+  const unauthorized = await requireAccess(request, env);
+  if (unauthorized) return unauthorized;
+
   if (env.TEST_DATABASE !== "tangled-woods-test-db") {
     return reply({ error: "Test environment not configured" }, 403);
-  }
-
-  if (!request.headers.get("Cf-Access-Jwt-Assertion")) {
-    return reply({ error: "Authentication required" }, 401);
   }
 
   const origin = request.headers.get("Origin");

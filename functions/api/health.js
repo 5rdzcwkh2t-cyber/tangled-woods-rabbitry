@@ -1,4 +1,8 @@
-export async function onRequestGet({ env }) {
+import { requireAccess } from "./_shared/access-auth.js";
+
+export async function onRequestGet({ request, env }) {
+  const unauthorized = await requireAccess(request, env);
+  if (unauthorized) return unauthorized;
   try {
     const rabbits = await env.DB.prepare(
       "SELECT COUNT(*) AS total FROM rabbits"

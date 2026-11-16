@@ -741,7 +741,17 @@ form.addEventListener('submit', async event => {
     kindledDate: kindledInput.value,
     notes: notesInput.value.trim()
   };
-  if (!isNew) breedingData._id = breeding._id;
+      if (!isNew) {
+        breedingData._id = breeding._id;
+        breedingData.expected = {
+          doeId: String(breeding.doeId || ''),
+          buckId: String(breeding.buckId || ''),
+          date: String(breeding.date || ''),
+          status: String(breeding.status || ''),
+          kindledDate: String(breeding.kindledDate || ''),
+          notes: String(breeding.notes || '')
+        };
+      }
   const doe = db.rabbits.find(r => r._id === breedingData.doeId && String(r.Sex).toLowerCase() === 'doe');
   const buck = db.rabbits.find(r => r._id === breedingData.buckId && String(r.Sex).toLowerCase() === 'buck');
   if (!doe || !buck ||
