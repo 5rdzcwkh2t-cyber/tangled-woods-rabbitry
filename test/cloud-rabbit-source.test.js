@@ -4,9 +4,26 @@ import test from "node:test";
 import vm from "node:vm";
 
 const sourceUrl = new URL("../cloud-rabbit-source.js", import.meta.url);
+const clientUrl = new URL("../versioned-rabbit-cloud-client.js", import.meta.url);
+
+function versionedRabbit(id = "cloud-1", name = "Cloud Clover", revision = 2) {
+  return {
+    typedId: `s:${JSON.stringify(id)}`,
+    envelope: {
+      schemaVersion: 1,
+      id,
+      revision,
+      createdAt: "2026-11-19T08:00:00.000Z",
+      updatedAt: "2026-11-19T09:00:00.000Z",
+      record: { _id: id, Name: name }
+    },
+    projections: { name, sex: null, birthDate: null }
+  };
+}
 
 async function loadController(fetchImpl) {
   const source = await readFile(sourceUrl, "utf8");
+  const clientSource = await readFile(clientUrl, "utf8");
   const context = {
     window: {},
     document: {},
@@ -14,6 +31,7 @@ async function loadController(fetchImpl) {
     fetch: fetchImpl,
     structuredClone
   };
+  vm.runInNewContext(clientSource, context, { filename: "versioned-rabbit-cloud-client.js" });
   vm.runInNewContext(source, context, { filename: "cloud-rabbit-source.js" });
   return { source, createController: context.window.twCloudRabbitSource.createController };
 }
@@ -23,13 +41,14 @@ test("Development D1 source switches without changing local records", async () =
   const before = structuredClone(localRecords);
   const renders = [];
   const request = async (url, options) => {
-    assert.equal(url, "/api/rabbits");
+    assert.equal(url, "/api/test-versioned-rabbits?rabbitryId=dev-auth-test");
+    assert.equal(options.method, "GET");
     assert.equal(options.credentials, "same-origin");
     assert.equal(options.cache, "no-store");
     return {
       ok: true,
       status: 200,
-      json: async () => ({ rabbits: [{ _id: "cloud-1", Name: "Cloud Clover" }] })
+      json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [versionedRabbit()] })
     };
   };
   const { createController } = await loadController(request);
@@ -38,7 +57,8 @@ test("Development D1 source switches without changing local records", async () =
   await controller.selectCloud();
   assert.equal(controller.getState().source, "cloud");
   assert.equal(controller.getState().status, "ready");
-  assert.equal(controller.getState().records[0].Name, "Cloud Clover");
+  assert.equal(controller.getState().records[0].record.Name, "Cloud Clover");
+  assert.equal(controller.getState().records[0].metadata.revision, 2);
   assert.deepEqual(localRecords, before);
 
   controller.selectLocal();
@@ -72,18 +92,62 @@ test("leaving cloud view invalidates an in-flight response", async () => {
   const controller = createController({ fetchImpl: () => pending, render() {} });
   const loading = controller.selectCloud();
   controller.selectLocal();
-  resolveRequest({ ok: true, status: 200, json: async () => ({ rabbits: [{ Name: "Stale" }] }) });
+  resolveRequest({
+    ok: true,
+    status: 200,
+    json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [versionedRabbit("stale", "Stale")] })
+  });
   await loading;
   assert.equal(controller.getState().source, "local");
   assert.equal(controller.getState().records.length, 0);
 });
 
-test("read-only source contains no browser or cloud write paths", async () => {
+test("duplicate cloud create submissions share one request and never touch local records", async () => {
+  const localRecords = [{ _id: "local-1", Name: "Local Maple" }];
+  const before = structuredClone(localRecords);
+  let createCalls = 0;
+  let finishCreate;
+  const pendingCreate = new Promise((resolve) => { finishCreate = resolve; });
+  const request = async (url) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [] }) };
+    }
+    if (url === "/api/test-create-versioned-rabbit") {
+      createCalls += 1;
+      return pendingCreate;
+    }
+    throw new Error("Unexpected URL");
+  };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const record = { _id: "r-cloud-test", Name: "Created" };
+  const first = controller.createCloud(record);
+  const second = controller.createCloud(record);
+  assert.equal(first, second);
+  finishCreate({
+    ok: true,
+    status: 201,
+    json: async () => ({ rabbitryId: "dev-auth-test", created: true, rabbit: versionedRabbit("r-cloud-test", "Created", 0) })
+  });
+  const created = await first;
+  assert.equal(createCalls, 1);
+  assert.equal(created.record.Name, "Created");
+  assert.equal(controller.getState().records.length, 1);
+  assert.deepEqual(localRecords, before);
+});
+
+test("cloud source contains no browser storage, update, or delete paths", async () => {
   const source = await readFile(sourceUrl, "utf8");
+  const clientSource = await readFile(clientUrl, "utf8");
   assert.match(source, /Development D1 \(read-only\)/);
-  assert.match(source, /credentials: "same-origin"/);
+  assert.match(clientSource, /credentials: "same-origin"/);
   assert.doesNotMatch(source, /localStorage|indexedDB/);
   assert.doesNotMatch(source, /method:\s*"(?:POST|PUT|PATCH|DELETE)"/);
   assert.doesNotMatch(source, /\bdb\s*=/);
   assert.doesNotMatch(source, /\b(?:edit|restore|previewCSV|commitCSV|writePhotos|save)\s*\(/);
+  assert.doesNotMatch(clientSource, /localStorage|indexedDB/);
+  assert.match(clientSource, /test-create-versioned-rabbit/);
+  assert.doesNotMatch(clientSource, /method:\s*"(?:PUT|PATCH|DELETE)"/);
+  assert.doesNotMatch(clientSource, /test-update-versioned-rabbit/);
 });

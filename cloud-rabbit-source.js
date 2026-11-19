@@ -1,38 +1,20 @@
 (function () {
   "use strict";
 
-  const API = "/api/rabbits";
-
-  function cloneRecords(records) {
-    return records.map((record) => {
-      if (!record || typeof record !== "object" || Array.isArray(record)) {
-        throw new Error("Cloud rabbit data was not in the expected format.");
-      }
-      return typeof structuredClone === "function"
-        ? structuredClone(record)
-        : JSON.parse(JSON.stringify(record));
-    });
-  }
-
   function requestMessage(error) {
-    if (error?.status === 401) {
-      return "Cloudflare Access authentication is required. Sign in, then try again.";
-    }
-    if (error?.status === 403) {
-      return "The Development D1 environment could not be verified.";
-    }
-    if (error?.offline) {
-      return "Cloud rabbits could not be reached. Check the internet connection and try again.";
+    if (window.twVersionedRabbitClient?.requestMessage) {
+      return window.twVersionedRabbitClient.requestMessage(error);
     }
     return "Cloud rabbits could not be loaded. Try again; local rabbits were not changed.";
   }
 
-  function createController({ fetchImpl, render }) {
+  function createController({ fetchImpl, render, client = window.twVersionedRabbitClient }) {
     let source = "local";
     let status = "idle";
     let records = [];
     let message = "";
     let requestVersion = 0;
+    let createPromise = null;
 
     const snapshot = () => ({ source, status, records: records.slice(), message });
     const redraw = () => { if (typeof render === "function") render(snapshot()); };
@@ -59,31 +41,13 @@
       redraw();
 
       try {
-        let response;
-        try {
-          response = await fetchImpl(API, {
-            credentials: "same-origin",
-            cache: "no-store",
-            headers: { Accept: "application/json" }
-          });
-        } catch (cause) {
-          const error = new Error("Network request failed", { cause });
-          error.offline = true;
-          throw error;
+        if (!client || typeof client.listRabbits !== "function") {
+          throw new Error("Versioned rabbit client unavailable");
         }
-
-        let body;
-        try { body = await response.json(); } catch { body = null; }
-        if (!response.ok) {
-          const error = new Error("Cloud request failed");
-          error.status = response.status;
-          throw error;
-        }
-        if (!body || !Array.isArray(body.rabbits)) {
-          throw new Error("Invalid cloud rabbit response");
-        }
-
-        const current = cloneRecords(body.rabbits);
+        const current = await client.listRabbits({
+          fetchImpl,
+          rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test"
+        });
         if (version !== requestVersion || source !== "cloud") return;
         records = current;
         status = "ready";
@@ -97,7 +61,28 @@
       redraw();
     }
 
-    return { getState: snapshot, reset, selectLocal, selectCloud };
+    function createCloud(record) {
+      if (source !== "cloud" || !client || typeof client.createRabbit !== "function") {
+        return Promise.reject(new Error("Cloud rabbit creation is unavailable"));
+      }
+      if (createPromise) return createPromise;
+      createPromise = client.createRabbit({
+        fetchImpl,
+        rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test",
+        record
+      }).then((created) => {
+        if (source === "cloud") {
+          records = records.concat([created]);
+          message = "Cloud rabbit saved successfully.";
+        }
+        return created;
+      }).finally(() => {
+        createPromise = null;
+      });
+      return createPromise;
+    }
+
+    return { getState: snapshot, reset, selectLocal, selectCloud, createCloud };
   }
 
   window.twCloudRabbitSource = { createController, requestMessage };
@@ -108,6 +93,8 @@
   const priorNav = window.nav;
   let search = "";
   let selectedRecord = null;
+  let creating = false;
+  let createDraft = null;
 
   const controller = createController({
     fetchImpl: (...args) => fetch(...args),
@@ -155,13 +142,21 @@
     return [rabbit.Prefix, rabbit.Name].filter(Boolean).join(" ") || "Unnamed rabbit";
   }
 
-  function renderCloudDetail(view, state, rabbit) {
+  function renderCloudDetail(view, state, entry) {
+    const rabbit = entry.record;
     const back = node("button", "← Development D1 rabbits");
     back.type = "button";
     back.onclick = () => { selectedRecord = null; window.render(); };
     const heading = node("h2", rabbitLabel(rabbit));
     const notice = node("p", "Development D1 — read-only. Editing, deletion, importing, restoring, and photograph changes are unavailable.", "tw-cloud-app-banner");
     const card = node("div", undefined, "card");
+    if (state.message) {
+      const status = node("p", state.message, "muted");
+      status.setAttribute("role", "status");
+      card.append(status);
+    }
+    const revision = node("p", `Cloud revision ${entry.metadata.revision}`, "muted");
+    card.append(revision);
     const fields = ["Sex", "Tattoo", "Breed", "Color", "DOB", "DoB", "Father", "Mother", "Weight", "Status", "Notes"];
     for (const field of fields) {
       if (rabbit[field] === undefined || rabbit[field] === "") continue;
@@ -191,6 +186,19 @@
       return;
     }
 
+    const add = node("button", "+ Add rabbit", "primary");
+    add.type = "button";
+    add.onclick = () => {
+      try {
+        createDraft = { _id: window.twVersionedRabbitClient.createRabbitId() };
+        creating = true;
+        window.render();
+      } catch (error) {
+        status.textContent = requestMessage(error);
+      }
+    };
+    view.append(add);
+
     const input = document.createElement("input");
     input.type = "search";
     input.placeholder = "Search cloud rabbits by name, breed, tattoo, or parent";
@@ -205,22 +213,65 @@
     renderCloudListResults(view, state);
   }
 
+  function renderCloudCreate(view, state) {
+    view.append(sourceControls(state));
+    const back = node("button", "← Development D1 rabbits");
+    back.type = "button";
+    back.onclick = () => { creating = false; createDraft = null; window.render(); };
+    const heading = node("h2", "Add rabbit");
+    const notice = node("p", "Save a new rabbit to the authenticated Development D1 rabbitry. Local records are not changed.", "tw-cloud-app-banner");
+    const form = document.createElement("form");
+    const fields = ["Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", "DoB", "Father", "Mother", "Weight", "Status", "Notes"];
+    for (const field of fields) {
+      const label = node("label", field);
+      const input = document.createElement(field === "Notes" ? "textarea" : "input");
+      input.name = field;
+      input.value = createDraft[field] || "";
+      input.oninput = () => { createDraft[field] = input.value; };
+      label.append(input);
+      form.append(label);
+    }
+    const saveButton = node("button", "Save record", "primary");
+    saveButton.type = "submit";
+    const status = node("p", "", "muted");
+    status.setAttribute("role", "status");
+    form.append(saveButton, status);
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (saveButton.disabled) return;
+      saveButton.disabled = true;
+      status.textContent = "Saving cloud rabbit…";
+      try {
+        const created = await controller.createCloud(createDraft);
+        creating = false;
+        createDraft = null;
+        selectedRecord = created;
+        window.render();
+      } catch (error) {
+        status.textContent = requestMessage(error);
+        saveButton.disabled = false;
+      }
+    };
+    view.append(back, heading, notice, form);
+  }
+
   function renderCloudListResults(view, state) {
     const results = view.querySelector("#twCloudRabbitResults");
     const count = view.querySelector("#twCloudRabbitCount");
     if (!results || !count) return;
     const term = search.trim().toLowerCase();
     const fields = ["Prefix", "Name", "Breed", "Tattoo", "Father", "Mother", "Status"];
-    const matches = state.records.filter((rabbit) => !term || fields.some((field) => String(rabbit[field] || "").toLowerCase().includes(term)));
+    const matches = state.records.filter((entry) => !term || fields.some((field) => String(entry.record[field] || "").toLowerCase().includes(term)));
     count.textContent = `${matches.length} rabbit${matches.length === 1 ? "" : "s"}`;
     results.replaceChildren();
-    for (const rabbit of matches) {
+    for (const entry of matches) {
+      const rabbit = entry.record;
       const button = node("button", undefined, "listitem");
       button.type = "button";
       const title = node("strong", rabbitLabel(rabbit));
       const summary = node("span", [rabbit.Sex, rabbit.Breed, rabbit.Tattoo].filter(Boolean).join(" · "), "muted");
       button.append(title, summary);
-      button.onclick = () => { selectedRecord = rabbit; window.render(); };
+      button.onclick = () => { selectedRecord = entry; window.render(); };
       results.append(button);
     }
     if (!matches.length) results.append(node("p", "No cloud rabbits match this search.", "muted"));
@@ -237,7 +288,8 @@
       return result;
     }
     view.replaceChildren();
-    if (selectedRecord && state.status === "ready") renderCloudDetail(view, state, selectedRecord);
+    if (creating && state.status === "ready") renderCloudCreate(view, state);
+    else if (selectedRecord && state.status === "ready") renderCloudDetail(view, state, selectedRecord);
     else renderCloudList(view, state);
     return result;
   };
@@ -247,6 +299,8 @@
       controller.reset();
       search = "";
       selectedRecord = null;
+      creating = false;
+      createDraft = null;
     }
     return priorNav.apply(this, arguments);
   };
