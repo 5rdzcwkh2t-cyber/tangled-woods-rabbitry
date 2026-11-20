@@ -15,6 +15,7 @@
     let message = "";
     let requestVersion = 0;
     let createPromise = null;
+    let updatePromise = null;
 
     const snapshot = () => ({ source, status, records: records.slice(), message });
     const redraw = () => { if (typeof render === "function") render(snapshot()); };
@@ -82,7 +83,33 @@
       return createPromise;
     }
 
-    return { getState: snapshot, reset, selectLocal, selectCloud, createCloud };
+    function updateCloud(entry, record) {
+      if (source !== "cloud" || !client || typeof client.updateRabbit !== "function") {
+        return Promise.reject(new Error("Cloud rabbit editing is unavailable"));
+      }
+      if (!entry || !entry.metadata || !Object.is(entry.metadata.id, record?._id)) {
+        return Promise.reject(new Error("Cloud rabbit identity changed"));
+      }
+      if (updatePromise) return updatePromise;
+      updatePromise = client.updateRabbit({
+        fetchImpl,
+        rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test",
+        baseRevision: entry.metadata.revision,
+        record
+      }).then((updated) => {
+        if (source === "cloud") {
+          const index = records.findIndex((candidate) => candidate.metadata.typedId === entry.metadata.typedId);
+          if (index < 0) throw new Error("Cloud rabbit is no longer loaded");
+          records = records.slice();
+          records[index] = updated;
+          message = "Cloud rabbit updated successfully.";
+        }
+        return updated;
+      }).finally(() => { updatePromise = null; });
+      return updatePromise;
+    }
+
+    return { getState: snapshot, reset, selectLocal, selectCloud, createCloud, updateCloud };
   }
 
   window.twCloudRabbitSource = { createController, requestMessage };
@@ -95,6 +122,8 @@
   let selectedRecord = null;
   let creating = false;
   let createDraft = null;
+  let editing = false;
+  let editDraft = null;
 
   const controller = createController({
     fetchImpl: (...args) => fetch(...args),
@@ -113,7 +142,7 @@
     const heading = node("strong", "Rabbit data source");
     const help = node(
       "p",
-      "Local is the normal editable browser data. Development D1 is a temporary read-only view and never changes local records or photographs.",
+      "Local is the normal editable browser data. Development D1 is an isolated versioned view and never changes local records, legacy cloud records, or photographs.",
       "muted"
     );
     const controls = node("div", undefined, "row");
@@ -124,14 +153,14 @@
     local.type = "button";
     if (state.source === "local") local.className = "primary";
     local.setAttribute("aria-pressed", String(state.source === "local"));
-    local.onclick = () => { search = ""; selectedRecord = null; controller.selectLocal(); };
+    local.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; controller.selectLocal(); };
 
-    const cloud = node("button", "Development D1 (read-only)");
+    const cloud = node("button", "Development D1");
     cloud.type = "button";
     if (state.source === "cloud") cloud.className = "primary";
     cloud.setAttribute("aria-pressed", String(state.source === "cloud"));
     cloud.disabled = state.status === "loading";
-    cloud.onclick = () => { search = ""; selectedRecord = null; controller.selectCloud(); };
+    cloud.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; controller.selectCloud(); };
 
     controls.append(local, cloud);
     section.append(heading, help, controls);
@@ -149,6 +178,7 @@
     back.onclick = () => { selectedRecord = null; window.render(); };
     const heading = node("h2", rabbitLabel(rabbit));
     const notice = node("p", "Development D1 — read-only. Editing, deletion, importing, restoring, and photograph changes are unavailable.", "tw-cloud-app-banner");
+    notice.textContent = "Development D1 versioned rabbit. Editing creates a new revision; deletion, importing, restoring, and photograph changes are unavailable.";
     const card = node("div", undefined, "card");
     if (state.message) {
       const status = node("p", state.message, "muted");
@@ -157,6 +187,14 @@
     }
     const revision = node("p", `Cloud revision ${entry.metadata.revision}`, "muted");
     card.append(revision);
+    const edit = node("button", "Edit rabbit", "primary");
+    edit.type = "button";
+    edit.onclick = () => {
+      editDraft = structuredClone(entry.record);
+      editing = true;
+      window.render();
+    };
+    card.append(edit);
     const fields = ["Sex", "Tattoo", "Breed", "Color", "DOB", "DoB", "Father", "Mother", "Weight", "Status", "Notes"];
     for (const field of fields) {
       if (rabbit[field] === undefined || rabbit[field] === "") continue;
@@ -169,10 +207,55 @@
     view.append(sourceControls(state), back, heading, notice, card);
   }
 
+  function renderCloudEdit(view, state, entry) {
+    view.append(sourceControls(state));
+    const back = node("button", "Back to rabbit details");
+    back.type = "button";
+    back.onclick = () => { editing = false; editDraft = null; window.render(); };
+    const heading = node("h2", `Edit ${rabbitLabel(entry.record)}`);
+    const notice = node("p", `Saving creates cloud revision ${entry.metadata.revision + 1}. Local and legacy cloud rabbits are not changed.`, "tw-cloud-app-banner");
+    const form = document.createElement("form");
+    const dateField = Object.hasOwn(editDraft, "DOB") && !Object.hasOwn(editDraft, "DoB") ? "DOB" : "DoB";
+    const fields = ["Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", dateField, "Father", "Mother", "Weight", "Status", "Notes"];
+    for (const field of fields) {
+      const label = node("label", field);
+      const input = document.createElement(field === "Notes" ? "textarea" : "input");
+      input.name = field;
+      input.value = editDraft[field] || "";
+      input.oninput = () => { editDraft[field] = input.value; };
+      label.append(input);
+      form.append(label);
+    }
+    const saveButton = node("button", "Save new revision", "primary");
+    saveButton.type = "submit";
+    const status = node("p", "", "muted");
+    status.setAttribute("role", "status");
+    form.append(saveButton, status);
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (saveButton.disabled) return;
+      saveButton.disabled = true;
+      status.textContent = "Saving cloud rabbit...";
+      try {
+        const updated = await controller.updateCloud(entry, editDraft);
+        selectedRecord = updated;
+        editing = false;
+        editDraft = null;
+        window.render();
+      } catch (error) {
+        status.textContent = requestMessage(error);
+        saveButton.disabled = false;
+      }
+    };
+    view.append(back, heading, notice, form);
+  }
+
   function renderCloudList(view, state) {
     view.append(sourceControls(state));
     const heading = node("h2", "Rabbits — Development D1 (read-only)");
     const notice = node("p", "This temporary view cannot change cloud or local records. Cloud photographs are not available.", "tw-cloud-app-banner");
+    heading.textContent = "Rabbits - Development D1";
+    notice.textContent = "Create or edit versioned development rabbits here. Local records, legacy cloud rabbits, and photographs are not changed.";
     const status = node("p", state.message, "muted");
     status.setAttribute("role", "status");
     view.append(heading, notice, status);
@@ -289,6 +372,7 @@
     }
     view.replaceChildren();
     if (creating && state.status === "ready") renderCloudCreate(view, state);
+    else if (editing && selectedRecord && state.status === "ready") renderCloudEdit(view, state, selectedRecord);
     else if (selectedRecord && state.status === "ready") renderCloudDetail(view, state, selectedRecord);
     else renderCloudList(view, state);
     return result;
@@ -301,6 +385,8 @@
       selectedRecord = null;
       creating = false;
       createDraft = null;
+      editing = false;
+      editDraft = null;
     }
     return priorNav.apply(this, arguments);
   };

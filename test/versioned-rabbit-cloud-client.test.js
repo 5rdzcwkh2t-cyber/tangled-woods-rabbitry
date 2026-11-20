@@ -128,6 +128,70 @@ test("cloud create safely reports authentication, network, and duplicate conflic
   }
 });
 
+test("updates a rabbit using its current revision and preserves every record field", async () => {
+  const { client } = await loadClient();
+  const record = { _id: "rabbit-1", Name: "Edited", Notes: "preserved", nested: { future: true } };
+  let requestBody;
+  const updated = await client.updateRabbit({
+    baseRevision: 3,
+    record,
+    fetchImpl: async (url, options) => {
+      assert.equal(url, "/api/test-update-versioned-rabbit");
+      assert.equal(options.method, "POST");
+      assert.equal(options.credentials, "same-origin");
+      requestBody = JSON.parse(options.body);
+      return response({ rabbitryId: "dev-auth-test", updated: true, rabbit: {
+        ...item("rabbit-1", 4), envelope: { ...item("rabbit-1", 4).envelope, record }
+      } });
+    }
+  });
+  assert.deepEqual(requestBody, { rabbitryId: "dev-auth-test", baseRevision: 3, record });
+  assert.equal(updated.metadata.revision, 4);
+  assert.equal(updated.metadata.typedId, 's:"rabbit-1"');
+  assert.deepEqual(updated.record.nested, { future: true });
+});
+
+test("rejects invalid update inputs and malformed successful updates", async () => {
+  const { client } = await loadClient();
+  await assert.rejects(client.updateRabbit({ fetchImpl: async () => response({}), baseRevision: -1, record: { _id: "r" } }), (error) => error.name === "TypeError");
+  await assert.rejects(client.updateRabbit({ fetchImpl: async () => response({}), baseRevision: 0, record: { Name: "missing id" } }), (error) => error.name === "TypeError");
+  await assert.rejects(
+    client.updateRabbit({
+      fetchImpl: async () => response({ rabbitryId: "dev-auth-test", updated: true, rabbit: item("r", 3) }),
+      baseRevision: 0,
+      record: { _id: "r", Name: "edit" }
+    }),
+    (error) => error.category === "malformed"
+  );
+});
+
+test("reports revision conflicts without exposing or retrying the rejected update", async () => {
+  const { client } = await loadClient();
+  let calls = 0;
+  await assert.rejects(
+    client.updateRabbit({
+      baseRevision: 0,
+      record: { _id: "rabbit-1", Name: "stale" },
+      fetchImpl: async () => { calls += 1; return response({ error: "private detail" }, 409); }
+    }),
+    (error) => error.status === 409 && /changed after you opened it/.test(client.requestMessage(error))
+  );
+  assert.equal(calls, 1);
+});
+
+test("reports update validation failures without exposing submitted data", async () => {
+  const { client } = await loadClient();
+  await assert.rejects(
+    client.updateRabbit({
+      baseRevision: 0,
+      record: { _id: "rabbit-1", Name: "invalid server-side" },
+      fetchImpl: async () => response({ error: "private validation detail" }, 400)
+    }),
+    (error) => error.status === 400 && /data was invalid/.test(client.requestMessage(error)) &&
+      !client.requestMessage(error).includes("private validation detail")
+  );
+});
+
 test("maps network and requested HTTP failures without exposing response bodies", async () => {
   const { client } = await loadClient();
   await assert.rejects(
@@ -150,12 +214,12 @@ test("maps network and requested HTTP failures without exposing response bodies"
   }
 });
 
-test("client source allows only versioned GET and create POST operations", async () => {
+test("client source allows only versioned GET and create/update POST operations", async () => {
   const { source } = await loadClient();
   assert.match(source, /method: "GET"/);
   assert.match(source, /method: "POST"/);
   assert.match(source, /test-create-versioned-rabbit/);
   assert.doesNotMatch(source, /localStorage|indexedDB/);
   assert.doesNotMatch(source, /method:\s*"(?:PUT|PATCH|DELETE)"/);
-  assert.doesNotMatch(source, /test-update-versioned-rabbit/);
+  assert.match(source, /test-update-versioned-rabbit/);
 });

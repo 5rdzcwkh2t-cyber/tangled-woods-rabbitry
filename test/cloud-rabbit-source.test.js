@@ -137,17 +137,64 @@ test("duplicate cloud create submissions share one request and never touch local
   assert.deepEqual(localRecords, before);
 });
 
-test("cloud source contains no browser storage, update, or delete paths", async () => {
+test("successful cloud edits replace only the matching versioned entry and increment revision", async () => {
+  const localRecords = [{ _id: "local-1", Name: "Local Maple" }];
+  const before = structuredClone(localRecords);
+  let updateCalls = 0;
+  let requestBody;
+  const request = async (url, options) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [versionedRabbit()] }) };
+    }
+    if (url === "/api/test-update-versioned-rabbit") {
+      updateCalls += 1;
+      requestBody = JSON.parse(options.body);
+      return { ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test", updated: true, rabbit: versionedRabbit("cloud-1", "Edited Clover", 3)
+      }) };
+    }
+    throw new Error("Unexpected URL");
+  };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  const edited = { ...entry.record, Name: "Edited Clover", future: { retained: true } };
+  const first = controller.updateCloud(entry, edited);
+  const second = controller.updateCloud(entry, edited);
+  assert.equal(first, second);
+  const updated = await first;
+  assert.equal(updateCalls, 1);
+  assert.equal(requestBody.baseRevision, 2);
+  assert.equal(updated.metadata.revision, 3);
+  assert.equal(controller.getState().records[0].record.Name, "Edited Clover");
+  assert.deepEqual(localRecords, before);
+});
+
+test("revision conflicts leave the loaded cloud entry unchanged", async () => {
+  const request = async (url) => url.startsWith("/api/test-versioned-rabbits")
+    ? { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [versionedRabbit()] }) }
+    : { ok: false, status: 409, json: async () => ({ error: "private" }) };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  await assert.rejects(controller.updateCloud(entry, { ...entry.record, Name: "Stale edit" }), (error) => error.status === 409);
+  assert.equal(controller.getState().records[0].record.Name, "Cloud Clover");
+  assert.equal(controller.getState().records[0].metadata.revision, 2);
+});
+
+test("cloud source contains no browser storage or delete paths", async () => {
   const source = await readFile(sourceUrl, "utf8");
   const clientSource = await readFile(clientUrl, "utf8");
-  assert.match(source, /Development D1 \(read-only\)/);
+  assert.match(source, /Development D1/);
   assert.match(clientSource, /credentials: "same-origin"/);
   assert.doesNotMatch(source, /localStorage|indexedDB/);
-  assert.doesNotMatch(source, /method:\s*"(?:POST|PUT|PATCH|DELETE)"/);
+  assert.doesNotMatch(source, /method:\s*"(?:PUT|PATCH|DELETE)"/);
   assert.doesNotMatch(source, /\bdb\s*=/);
-  assert.doesNotMatch(source, /\b(?:edit|restore|previewCSV|commitCSV|writePhotos|save)\s*\(/);
+  assert.doesNotMatch(source, /\b(?:restore|previewCSV|commitCSV|writePhotos)\s*\(/);
   assert.doesNotMatch(clientSource, /localStorage|indexedDB/);
   assert.match(clientSource, /test-create-versioned-rabbit/);
   assert.doesNotMatch(clientSource, /method:\s*"(?:PUT|PATCH|DELETE)"/);
-  assert.doesNotMatch(clientSource, /test-update-versioned-rabbit/);
+  assert.match(clientSource, /test-update-versioned-rabbit/);
 });
