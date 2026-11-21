@@ -36,8 +36,64 @@ async function loadController(fetchImpl) {
   vm.runInNewContext(managementSource, context, { filename: "rabbit-management-controller.js" });
   vm.runInNewContext(clientSource, context, { filename: "versioned-rabbit-cloud-client.js" });
   vm.runInNewContext(source, context, { filename: "cloud-rabbit-source.js" });
-  return { source, createController: context.window.twCloudRabbitSource.createController };
+  return {
+    source,
+    createController: context.window.twCloudRabbitSource.createController,
+    isDevelopmentPreviewHost: context.window.twCloudRabbitSource.isDevelopmentPreviewHost
+  };
 }
+
+test("cloud-first activation is limited to development Preview hosts", async () => {
+  const { isDevelopmentPreviewHost } = await loadController(async () => { throw new Error("unused"); });
+  assert.equal(isDevelopmentPreviewHost("cloud-development.tangled-woods-rabbitry.pages.dev"), true);
+  assert.equal(isDevelopmentPreviewHost("c491e4ad.tangled-woods-rabbitry.pages.dev"), true);
+  assert.equal(isDevelopmentPreviewHost("C491E4AD.TANGLED-WOODS-RABBITRY.PAGES.DEV."), true);
+  for (const host of [
+    "tangled-woods-rabbitry.pages.dev",
+    "www.tangledwoodsrabbitry.com",
+    "localhost",
+    "127.0.0.1",
+    "feature.tangled-woods-rabbitry.pages.dev",
+    "c491e4ad.other-project.pages.dev",
+    ""
+  ]) assert.equal(isDevelopmentPreviewHost(host), false, host);
+});
+
+test("cloud-first initialization never invokes local save or modifies localStorage", async () => {
+  let saveCalls = 0;
+  let storageWrites = 0;
+  const localRecords = [{ _id: 1, Name: "Local one" }, { _id: "1", Name: "Local text one" }];
+  const before = structuredClone(localRecords);
+  const request = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [versionedRabbit()] })
+  });
+  const { createController } = await loadController(request);
+  const controller = createController({
+    fetchImpl: request,
+    render() {},
+    save: () => { saveCalls += 1; },
+    localStorage: { setItem: () => { storageWrites += 1; } }
+  });
+
+  await controller.initialize("cloud-development.tangled-woods-rabbitry.pages.dev");
+  assert.equal(controller.getState().source, "cloud");
+  assert.equal(controller.getState().status, "ready");
+  assert.equal(saveCalls, 0);
+  assert.equal(storageWrites, 0);
+  assert.deepEqual(localRecords, before);
+});
+
+test("non-Preview initialization stays local without making a request", async () => {
+  let requests = 0;
+  const { createController } = await loadController(async () => { requests += 1; });
+  const controller = createController({ fetchImpl: async () => { requests += 1; }, render() {} });
+  await controller.initialize("tangled-woods-rabbitry.pages.dev");
+  assert.equal(requests, 0);
+  assert.equal(controller.getState().source, "local");
+  assert.equal(controller.getState().status, "idle");
+});
 
 test("Development D1 source switches without changing local records", async () => {
   const localRecords = [{ _id: "local-1", Name: "Local Maple" }];
@@ -78,6 +134,10 @@ test("failed, offline, and unauthenticated fetches clear cloud records", async (
   for (const [fetchImpl, expected] of [
     [async () => { throw new TypeError("offline"); }, /internet connection/],
     [async () => ({ ok: false, status: 401, json: async () => ({ error: "ignored" }) }), /authentication is required/],
+    [async () => ({ ok: false, status: 403, json: async () => ({ error: "ignored" }) }), /access was denied/],
+    [async () => ({ ok: false, status: 404, json: async () => ({ error: "ignored" }) }), /could not be found/],
+    [async () => ({ ok: false, status: 409, json: async () => ({ error: "ignored" }) }), /already exists/],
+    [async () => ({ ok: false, status: 503, json: async () => ({ error: "ignored" }) }), /temporarily unavailable/],
     [async () => ({ ok: false, status: 500, json: async () => ({}) }), /could not be loaded/]
   ]) {
     const { createController } = await loadController(fetchImpl);
@@ -269,9 +329,10 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   const source = await readFile(sourceUrl, "utf8");
   const clientSource = await readFile(clientUrl, "utf8");
   const managementSource = await readFile(managementUrl, "utf8");
-  assert.match(source, /Development D1/);
+  assert.match(source, /Development cloud/);
   assert.match(clientSource, /credentials: "same-origin"/);
   assert.doesNotMatch(source, /localStorage|indexedDB/);
+  assert.doesNotMatch(source, /\bsave\s*\(/);
   assert.doesNotMatch(source, /method:\s*"(?:PUT|PATCH|DELETE)"/);
   assert.doesNotMatch(source, /\bdb\s*=/);
   assert.doesNotMatch(source, /\b(?:restore|previewCSV|commitCSV|writePhotos)\s*\(/);

@@ -1,6 +1,14 @@
 (function () {
   "use strict";
 
+  const PREVIEW_PROJECT = "tangled-woods-rabbitry.pages.dev";
+
+  function isDevelopmentPreviewHost(hostname) {
+    const host = String(hostname || "").trim().toLowerCase().replace(/\.$/, "");
+    if (host === `cloud-development.${PREVIEW_PROJECT}`) return true;
+    return new RegExp(`^[a-f0-9]{8}\\.${PREVIEW_PROJECT.replace(/\\./g, "\\\\.")}$`).test(host);
+  }
+
   function requestMessage(error) {
     if (window.twVersionedRabbitClient?.requestMessage) {
       return window.twVersionedRabbitClient.requestMessage(error);
@@ -48,11 +56,16 @@
       redraw();
     }
 
+    function initialize(hostname) {
+      if (!isDevelopmentPreviewHost(hostname)) return Promise.resolve(snapshot());
+      return selectCloud();
+    }
+
     async function selectCloud() {
       const version = ++requestVersion;
       management.activate(cloudSource);
       status = "loading";
-      message = "Loading current Development D1 rabbits…";
+      message = "Loading development cloud rabbits…";
       redraw();
 
       try {
@@ -67,7 +80,7 @@
         management.setRecords(current);
         status = "ready";
         const count = management.getState().records.length;
-        message = `${count} current Development D1 rabbit${count === 1 ? "" : "s"}.`;
+        message = `${count} development cloud rabbit${count === 1 ? "" : "s"}.`;
       } catch (error) {
         if (version !== requestVersion || management.getState().source.key !== cloudSource.key) return;
         management.setRecords([]);
@@ -156,12 +169,12 @@
     }
 
     return {
-      getState: snapshot, reset, selectLocal, selectCloud,
+      getState: snapshot, reset, initialize, selectLocal, selectCloud,
       createCloud, updateCloud, deleteCloud, selectRecord, clearSelection
     };
   }
 
-  window.twCloudRabbitSource = { createController, requestMessage };
+  window.twCloudRabbitSource = { createController, requestMessage, isDevelopmentPreviewHost };
 
   if (typeof window.render !== "function" || typeof window.nav !== "function") return;
 
@@ -173,6 +186,8 @@
   let editing = false;
   let editDraft = null;
   let confirmingDelete = false;
+  const cloudFirstPreview = isDevelopmentPreviewHost(window.location?.hostname);
+  let previewInitialized = false;
 
   const controller = createController({
     fetchImpl: (...args) => fetch(...args),
@@ -191,7 +206,7 @@
     const heading = node("strong", "Rabbit data source");
     const help = node(
       "p",
-      "Local is the normal editable browser data. Development D1 is an isolated versioned view and never changes local records, legacy cloud records, or photographs.",
+      "Development cloud and local browser rabbits remain isolated. Changing sources never copies, merges, or overwrites records.",
       "muted"
     );
     const controls = node("div", undefined, "row");
@@ -204,7 +219,7 @@
     local.setAttribute("aria-pressed", String(state.source === "local"));
     local.onclick = () => { search = ""; editing = false; editDraft = null; confirmingDelete = false; controller.selectLocal(); };
 
-    const cloud = node("button", "Development D1");
+    const cloud = node("button", "Development cloud");
     cloud.type = "button";
     if (state.source === "cloud") cloud.className = "primary";
     cloud.setAttribute("aria-pressed", String(state.source === "cloud"));
@@ -222,12 +237,12 @@
 
   function renderCloudDetail(view, state, entry) {
     const rabbit = entry.record;
-    const back = node("button", "← Development D1 rabbits");
+    const back = node("button", "← Rabbits");
     back.type = "button";
     back.onclick = () => { controller.clearSelection(); window.render(); };
     const heading = node("h2", rabbitLabel(rabbit));
-    const notice = node("p", "Development D1 — read-only. Editing, deletion, importing, restoring, and photograph changes are unavailable.", "tw-cloud-app-banner");
-    notice.textContent = "Development D1 versioned rabbit. Editing or soft deletion creates a new revision; importing, restoring, and photograph changes are unavailable.";
+    const notice = node("p", "Development cloud rabbit.", "tw-cloud-app-banner");
+    notice.textContent = "Development cloud rabbit. Editing or soft deletion creates a new revision. Breeding, litters, pedigrees, photographs, importing, and restoring remain local-only.";
     const card = node("div", undefined, "card");
     if (state.message) {
       const status = node("p", state.message, "muted");
@@ -337,13 +352,14 @@
 
   function renderCloudList(view, state) {
     view.append(sourceControls(state));
-    const heading = node("h2", "Rabbits — Development D1 (read-only)");
+    const heading = node("h2", "Rabbits");
     const notice = node("p", "This temporary view cannot change cloud or local records. Cloud photographs are not available.", "tw-cloud-app-banner");
-    heading.textContent = "Rabbits - Development D1";
-    notice.textContent = "Create or edit versioned development rabbits here. Local records, legacy cloud rabbits, and photographs are not changed.";
+    const badge = node("span", "Development cloud", "muted");
+    badge.setAttribute("aria-label", "Rabbit source: Development cloud");
+    notice.textContent = "Versioned cloud rabbits are isolated from local and legacy cloud records. Relationship-dependent actions and photographs remain local-only.";
     const status = node("p", state.message, "muted");
     status.setAttribute("role", "status");
-    view.append(heading, notice, status);
+    view.append(heading, badge, notice, status);
 
     if (state.status === "loading") return;
     if (state.status === "error") {
@@ -351,6 +367,10 @@
       retry.type = "button";
       retry.onclick = () => controller.selectCloud();
       view.append(retry);
+      const useLocal = node("button", "Use local rabbits on this device");
+      useLocal.type = "button";
+      useLocal.onclick = () => controller.selectLocal();
+      view.append(useLocal);
       return;
     }
 
@@ -383,11 +403,11 @@
 
   function renderCloudCreate(view, state) {
     view.append(sourceControls(state));
-    const back = node("button", "← Development D1 rabbits");
+    const back = node("button", "← Rabbits");
     back.type = "button";
     back.onclick = () => { creating = false; createDraft = null; window.render(); };
     const heading = node("h2", "Add rabbit");
-    const notice = node("p", "Save a new rabbit to the authenticated Development D1 rabbitry. Local records are not changed.", "tw-cloud-app-banner");
+    const notice = node("p", "Save a new rabbit to the authenticated development cloud. Local records are not changed.", "tw-cloud-app-banner");
     const form = document.createElement("form");
     const fields = ["Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", "DoB", "Father", "Mother", "Weight", "Status", "Notes"];
     for (const field of fields) {
@@ -446,6 +466,12 @@
   }
 
   window.render = function () {
+    if (page === "Rabbits" && cloudFirstPreview && !previewInitialized &&
+        !(typeof window.twIsCloudTestMode === "function" && window.twIsCloudTestMode())) {
+      previewInitialized = true;
+      controller.initialize(window.location.hostname);
+      return;
+    }
     const result = priorRender.apply(this, arguments);
     if (page !== "Rabbits" || (typeof window.twIsCloudTestMode === "function" && window.twIsCloudTestMode())) return result;
     const state = controller.getState();
@@ -466,6 +492,7 @@
 
   window.nav = function (target) {
     if (target !== "Rabbits") {
+      previewInitialized = false;
       controller.reset();
       search = "";
       controller.clearSelection();
