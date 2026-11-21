@@ -184,7 +184,56 @@ test("revision conflicts leave the loaded cloud entry unchanged", async () => {
   assert.equal(controller.getState().records[0].metadata.revision, 2);
 });
 
-test("cloud source contains no browser storage or delete paths", async () => {
+test("duplicate soft-delete submissions share one request and remove only the matching cloud entry", async () => {
+  const localRecords = [{ _id: "local-1", Name: "Local Maple" }];
+  const before = structuredClone(localRecords);
+  let deleteCalls = 0;
+  let finishDelete;
+  const pendingDelete = new Promise((resolve) => { finishDelete = resolve; });
+  const request = async (url) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test",
+        rabbits: [versionedRabbit("cloud-1"), versionedRabbit("cloud-2", "Cloud Hazel", 1)]
+      }) };
+    }
+    if (url === "/api/test-delete-versioned-rabbit") {
+      deleteCalls += 1;
+      return pendingDelete;
+    }
+    throw new Error("Unexpected URL");
+  };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  const first = controller.deleteCloud(entry);
+  const second = controller.deleteCloud(entry);
+  assert.equal(first, second);
+  finishDelete({ ok: true, status: 200, json: async () => ({
+    rabbitryId: "dev-auth-test", deleted: true, deletedAt: "2026-11-21T08:00:00.000Z",
+    rabbit: versionedRabbit("cloud-1", "Cloud Clover", 3)
+  }) });
+  await first;
+  assert.equal(deleteCalls, 1);
+  assert.deepEqual(controller.getState().records.map(item => item.metadata.id), ["cloud-2"]);
+  assert.deepEqual(localRecords, before);
+});
+
+test("failed soft deletion preserves the loaded cloud entry", async () => {
+  const request = async (url) => url.startsWith("/api/test-versioned-rabbits")
+    ? { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [versionedRabbit()] }) }
+    : { ok: false, status: 409, json: async () => ({ error: "private" }) };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  await assert.rejects(controller.deleteCloud(entry), (error) => error.status === 409);
+  assert.equal(controller.getState().records.length, 1);
+  assert.equal(controller.getState().records[0].metadata.revision, 2);
+});
+
+test("cloud source contains no browser storage or physical-delete paths", async () => {
   const source = await readFile(sourceUrl, "utf8");
   const clientSource = await readFile(clientUrl, "utf8");
   assert.match(source, /Development D1/);
@@ -197,4 +246,8 @@ test("cloud source contains no browser storage or delete paths", async () => {
   assert.match(clientSource, /test-create-versioned-rabbit/);
   assert.doesNotMatch(clientSource, /method:\s*"(?:PUT|PATCH|DELETE)"/);
   assert.match(clientSource, /test-update-versioned-rabbit/);
+  assert.match(clientSource, /test-delete-versioned-rabbit/);
+  assert.match(source, /Confirm versioned rabbit deletion/);
+  assert.match(source, /rabbitLabel\(entry\.record\)/);
+  assert.match(source, /Delete versioned rabbit/);
 });

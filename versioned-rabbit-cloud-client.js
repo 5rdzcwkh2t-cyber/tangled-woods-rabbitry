@@ -5,6 +5,7 @@
   const API = "/api/test-versioned-rabbits";
   const CREATE_API = "/api/test-create-versioned-rabbit";
   const UPDATE_API = "/api/test-update-versioned-rabbit";
+  const DELETE_API = "/api/test-delete-versioned-rabbit";
 
   class CloudRabbitError extends Error {
     constructor(message, options = {}) {
@@ -196,11 +197,45 @@
     return updated;
   }
 
+  async function deleteRabbit({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, typedId, baseRevision } = {}) {
+    if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");
+    if (typeof rabbitryId !== "string" || !rabbitryId.trim()) throw new TypeError("rabbitryId is required");
+    if (typeof typedId !== "string" || !typedId) throw new TypeError("typedId is required");
+    if (!Number.isSafeInteger(baseRevision) || baseRevision < 0) throw new TypeError("baseRevision is required");
+    let response;
+    try {
+      response = await fetchImpl(DELETE_API, {
+        method: "POST", credentials: "same-origin", cache: "no-store",
+        headers: { Accept: "application/json", "Content-Type": "application/json" },
+        body: JSON.stringify({ rabbitryId, typedId, baseRevision })
+      });
+    } catch (cause) {
+      throw new CloudRabbitError("Network request failed", { category: "network", offline: true, cause });
+    }
+    let body;
+    try { body = await response.json(); }
+    catch { throw new CloudRabbitError("Invalid cloud rabbit response", { status: response.status, category: "malformed" }); }
+    if (!response.ok) throw new CloudRabbitError("Cloud rabbit request failed", {
+      status: response.status,
+      category: response.status === 409 ? "revision-conflict" : response.status === 400 ? "validation" : "http"
+    });
+    if (!isObject(body) || body.deleted !== true || body.rabbitryId !== rabbitryId ||
+        typeof body.deletedAt !== "string" || !body.deletedAt) {
+      throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
+    }
+    const deleted = validateItem(body.rabbit, rabbitryId);
+    if (deleted.metadata.typedId !== typedId || deleted.metadata.revision !== baseRevision + 1) {
+      throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
+    }
+    deleted.metadata.deletedAt = body.deletedAt;
+    return deleted;
+  }
+
   function requestMessage(error) {
     if (error?.status === 401) return "Cloudflare Access authentication is required. Sign in, then try again.";
     if (error?.status === 403) return "Cloud rabbit access was denied. Confirm the Development D1 environment and your rabbitry role.";
     if (error?.status === 404) return "The development rabbitry could not be found or is not available to this account.";
-    if (error?.category === "revision-conflict") return "This cloud rabbit changed after you opened it. Reload Development D1 before editing again; your changes were not saved.";
+    if (error?.category === "revision-conflict") return "This cloud rabbit changed after you opened it. Reload Development D1 before trying again; your changes were not saved.";
     if (error?.category === "validation") return "The cloud rabbit could not be saved because its data was invalid. No changes were made.";
     if (error?.status === 409) return "A cloud rabbit with this ID already exists. Reload before trying again.";
     if (error?.status === 503) return "Versioned cloud rabbit storage is temporarily unavailable.";
@@ -217,6 +252,7 @@
     createRabbitId,
     createRabbit,
     updateRabbit,
+    deleteRabbit,
     requestMessage
   };
 })();

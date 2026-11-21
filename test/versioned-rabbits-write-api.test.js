@@ -3,6 +3,8 @@ import test from "node:test";
 
 import { onRequestPost as createRabbit } from "../functions/api/test-create-versioned-rabbit.js";
 import { onRequestPost as updateRabbit } from "../functions/api/test-update-versioned-rabbit.js";
+import { onRequestPost as deleteRabbit } from "../functions/api/test-delete-versioned-rabbit.js";
+import { onRequestGet as readRabbits } from "../functions/api/test-versioned-rabbits.js";
 import { createRabbitEnvelope, deriveRabbitProjections } from "../rabbit-record-contract.js";
 import { encodeRabbitId } from "../rabbit-typed-id.js";
 import { getTestAuth } from "./support/access-test-auth.js";
@@ -72,7 +74,7 @@ function seedVersion(database, rabbitryId, envelope, deletedAt = null, typedId =
 
 function storedRows(database, rabbitryId, id) {
   return database.prepare(`
-    SELECT revision, envelope FROM rabbit_record_versions
+    SELECT revision, deleted_at, envelope FROM rabbit_record_versions
     WHERE rabbitry_id = ? AND typed_id = ? ORDER BY revision
   `).all(rabbitryId, encodeRabbitId(id));
 }
@@ -274,6 +276,139 @@ test("update appends history and rejects stale and simultaneous competing edits"
   }), 409);
   assert.deepEqual(stale, { error: "Rabbit changed since the base revision" });
   assert.equal(storedRows(fixture.database, "woods-a", "r-1").length, 2);
+});
+
+test("soft deletion appends a tombstone, preserves history, and hides the rabbit", async (t) => {
+  const fixture = await createTestDatabase();
+  t.after(() => fixture.close());
+  addRabbitry(fixture.database, "woods-a");
+  addMembership(fixture.database, "woods-a", "integration-test-user", "owner");
+  addRabbitry(fixture.database, "woods-b");
+  addMembership(fixture.database, "woods-b", "integration-test-user", "owner");
+  const originalRecord = record("delete-me", "Temporary", { futureField: { preserved: true } });
+  await json(await createRabbit({
+    request: post("test-create-versioned-rabbit", fixture.accessToken, {
+      rabbitryId: "woods-a", record: originalRecord
+    }), env: fixture.env
+  }), 201);
+  seedVersion(fixture.database, "woods-b", createRabbitEnvelope({
+    id: "delete-me", revision: 0, createdAt: now, updatedAt: now,
+    record: record("delete-me", "Other rabbitry")
+  }));
+
+  const deleted = await json(await deleteRabbit({
+    request: post("test-delete-versioned-rabbit", fixture.accessToken, {
+      rabbitryId: "woods-a", typedId: encodeRabbitId("delete-me"), baseRevision: 0
+    }), env: fixture.env
+  }), 200);
+  assert.equal(deleted.deleted, true);
+  assert.equal(deleted.rabbit.envelope.revision, 1);
+  assert.deepEqual(deleted.rabbit.envelope.record, originalRecord);
+  assert.equal(typeof deleted.deletedAt, "string");
+
+  const rows = storedRows(fixture.database, "woods-a", "delete-me");
+  assert.equal(rows.length, 2);
+  assert.equal(rows[0].deleted_at, null);
+  assert.equal(rows[1].deleted_at, deleted.deletedAt);
+  assert.deepEqual(JSON.parse(rows[0].envelope).record, originalRecord);
+  assert.deepEqual(JSON.parse(rows[1].envelope).record, originalRecord);
+  assert.equal(storedRows(fixture.database, "woods-b", "delete-me").length, 1);
+  assert.equal(storedRows(fixture.database, "woods-b", "delete-me")[0].deleted_at, null);
+
+  const listed = await json(await readRabbits({
+    request: new Request(`${origin}/api/test-versioned-rabbits?rabbitryId=woods-a`, {
+      headers: { "Cf-Access-Jwt-Assertion": fixture.accessToken }
+    }), env: fixture.env
+  }), 200);
+  assert.deepEqual(listed.rabbits, []);
+
+  const repeated = await json(await deleteRabbit({
+    request: post("test-delete-versioned-rabbit", fixture.accessToken, {
+      rabbitryId: "woods-a", typedId: encodeRabbitId("delete-me"), baseRevision: 0
+    }), env: fixture.env
+  }), 409);
+  assert.deepEqual(repeated, { error: "Rabbit changed since the base revision" });
+  assert.equal(storedRows(fixture.database, "woods-a", "delete-me").length, 2);
+});
+
+test("delete authorization and rabbitry scoping protect other records", async (t) => {
+  const fixture = await createTestDatabase();
+  t.after(() => fixture.close());
+  for (const [rabbitryId, role, subject] of [
+    ["owner-r", "owner", "integration-test-user"],
+    ["viewer-r", "viewer", "integration-test-user"],
+    ["other-r", "owner", "different-user"]
+  ]) {
+    addRabbitry(fixture.database, rabbitryId);
+    addMembership(fixture.database, rabbitryId, subject, role);
+    seedVersion(fixture.database, rabbitryId, createRabbitEnvelope({
+      id: "shared", revision: 0, createdAt: now, updatedAt: now, record: record("shared", rabbitryId)
+    }));
+  }
+
+  assert.deepEqual(await json(await deleteRabbit({
+    request: post("test-delete-versioned-rabbit", fixture.accessToken, {
+      rabbitryId: "viewer-r", typedId: encodeRabbitId("shared"), baseRevision: 0
+    }), env: fixture.env
+  }), 403), { error: "Rabbitry write access denied" });
+  assert.deepEqual(await json(await deleteRabbit({
+    request: post("test-delete-versioned-rabbit", fixture.accessToken, {
+      rabbitryId: "other-r", typedId: encodeRabbitId("shared"), baseRevision: 0
+    }), env: fixture.env
+  }), 404), { error: "Rabbitry not found" });
+  assert.equal(storedRows(fixture.database, "viewer-r", "shared").length, 1);
+  assert.equal(storedRows(fixture.database, "other-r", "shared").length, 1);
+});
+
+test("delete authentication, origin, and canonical identity fail before writes", async (t) => {
+  const fixture = await createTestDatabase();
+  t.after(() => fixture.close());
+  addRabbitry(fixture.database, "woods-a");
+  addMembership(fixture.database, "woods-a", "integration-test-user", "owner");
+  seedVersion(fixture.database, "woods-a", createRabbitEnvelope({
+    id: "protected", revision: 0, createdAt: now, updatedAt: now, record: record("protected")
+  }));
+  const body = { rabbitryId: "woods-a", typedId: encodeRabbitId("protected"), baseRevision: 0 };
+  assert.deepEqual(await json(await deleteRabbit({
+    request: post("test-delete-versioned-rabbit", null, body), env: fixture.env
+  }), 401), { error: "Authentication required" });
+  assert.deepEqual(await json(await deleteRabbit({
+    request: post("test-delete-versioned-rabbit", fixture.accessToken, body, { omitOrigin: true }), env: fixture.env
+  }), 403), { error: "Invalid request origin" });
+  assert.deepEqual(await json(await deleteRabbit({
+    request: post("test-delete-versioned-rabbit", fixture.accessToken, {
+      ...body, typedId: 's:"protected" '
+    }), env: fixture.env
+  }), 400), { error: "Invalid rabbit request" });
+  assert.equal(storedRows(fixture.database, "woods-a", "protected").length, 1);
+});
+
+test("concurrent edit and delete from the same base revision cannot both succeed", async (t) => {
+  const fixture = await createTestDatabase();
+  t.after(() => fixture.close());
+  addRabbitry(fixture.database, "woods-a");
+  addMembership(fixture.database, "woods-a", "integration-test-user", "editor");
+  seedVersion(fixture.database, "woods-a", createRabbitEnvelope({
+    id: "race", revision: 0, createdAt: now, updatedAt: now, record: record("race", "Original")
+  }));
+
+  const responses = await Promise.all([
+    updateRabbit({
+      request: post("test-update-versioned-rabbit", fixture.accessToken, {
+        rabbitryId: "woods-a", baseRevision: 0, record: record("race", "Edited")
+      }), env: fixture.env
+    }),
+    deleteRabbit({
+      request: post("test-delete-versioned-rabbit", fixture.accessToken, {
+        rabbitryId: "woods-a", typedId: encodeRabbitId("race"), baseRevision: 0
+      }), env: fixture.env
+    })
+  ]);
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
+  const rows = storedRows(fixture.database, "woods-a", "race");
+  assert.equal(rows.length, 2);
+  assert.deepEqual(rows.map(row => row.revision), [0, 1]);
+  assert.equal(rows.filter(row => row.deleted_at !== null).length <= 1, true);
 });
 
 test("updates are rabbitry-scoped and reject corrupted latest records", async (t) => {

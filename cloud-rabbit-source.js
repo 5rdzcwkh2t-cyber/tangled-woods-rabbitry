@@ -16,6 +16,7 @@
     let requestVersion = 0;
     let createPromise = null;
     let updatePromise = null;
+    let deletePromise = null;
 
     const snapshot = () => ({ source, status, records: records.slice(), message });
     const redraw = () => { if (typeof render === "function") render(snapshot()); };
@@ -109,7 +110,30 @@
       return updatePromise;
     }
 
-    return { getState: snapshot, reset, selectLocal, selectCloud, createCloud, updateCloud };
+    function deleteCloud(entry) {
+      if (source !== "cloud" || !client || typeof client.deleteRabbit !== "function") {
+        return Promise.reject(new Error("Cloud rabbit deletion is unavailable"));
+      }
+      if (!entry || !entry.metadata || typeof entry.metadata.typedId !== "string") {
+        return Promise.reject(new Error("Cloud rabbit identity is unavailable"));
+      }
+      if (deletePromise) return deletePromise;
+      deletePromise = client.deleteRabbit({
+        fetchImpl,
+        rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test",
+        typedId: entry.metadata.typedId,
+        baseRevision: entry.metadata.revision
+      }).then((deleted) => {
+        if (source === "cloud") {
+          records = records.filter((candidate) => candidate.metadata.typedId !== entry.metadata.typedId);
+          message = "Cloud rabbit deleted successfully. Its revision history was preserved.";
+        }
+        return deleted;
+      }).finally(() => { deletePromise = null; });
+      return deletePromise;
+    }
+
+    return { getState: snapshot, reset, selectLocal, selectCloud, createCloud, updateCloud, deleteCloud };
   }
 
   window.twCloudRabbitSource = { createController, requestMessage };
@@ -124,6 +148,7 @@
   let createDraft = null;
   let editing = false;
   let editDraft = null;
+  let confirmingDelete = false;
 
   const controller = createController({
     fetchImpl: (...args) => fetch(...args),
@@ -153,14 +178,14 @@
     local.type = "button";
     if (state.source === "local") local.className = "primary";
     local.setAttribute("aria-pressed", String(state.source === "local"));
-    local.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; controller.selectLocal(); };
+    local.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; confirmingDelete = false; controller.selectLocal(); };
 
     const cloud = node("button", "Development D1");
     cloud.type = "button";
     if (state.source === "cloud") cloud.className = "primary";
     cloud.setAttribute("aria-pressed", String(state.source === "cloud"));
     cloud.disabled = state.status === "loading";
-    cloud.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; controller.selectCloud(); };
+    cloud.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; confirmingDelete = false; controller.selectCloud(); };
 
     controls.append(local, cloud);
     section.append(heading, help, controls);
@@ -178,7 +203,7 @@
     back.onclick = () => { selectedRecord = null; window.render(); };
     const heading = node("h2", rabbitLabel(rabbit));
     const notice = node("p", "Development D1 — read-only. Editing, deletion, importing, restoring, and photograph changes are unavailable.", "tw-cloud-app-banner");
-    notice.textContent = "Development D1 versioned rabbit. Editing creates a new revision; deletion, importing, restoring, and photograph changes are unavailable.";
+    notice.textContent = "Development D1 versioned rabbit. Editing or soft deletion creates a new revision; importing, restoring, and photograph changes are unavailable.";
     const card = node("div", undefined, "card");
     if (state.message) {
       const status = node("p", state.message, "muted");
@@ -195,6 +220,10 @@
       window.render();
     };
     card.append(edit);
+    const remove = node("button", "Delete rabbit");
+    remove.type = "button";
+    remove.onclick = () => { confirmingDelete = true; window.render(); };
+    card.append(remove);
     const fields = ["Sex", "Tattoo", "Breed", "Color", "DOB", "DoB", "Father", "Mother", "Weight", "Status", "Notes"];
     for (const field of fields) {
       if (rabbit[field] === undefined || rabbit[field] === "") continue;
@@ -205,6 +234,39 @@
     }
     if (!card.childNodes.length) card.append(node("p", "No additional rabbit details are available.", "muted"));
     view.append(sourceControls(state), back, heading, notice, card);
+  }
+
+  function renderCloudDeleteConfirmation(view, state, entry) {
+    view.append(sourceControls(state));
+    const heading = node("h2", "Confirm versioned rabbit deletion");
+    const warning = node("p", `Delete \"${rabbitLabel(entry.record)}\"? This hides the rabbit by creating revision ${entry.metadata.revision + 1}; its complete history is preserved.`, "tw-cloud-app-banner");
+    const controls = node("div", undefined, "row");
+    controls.style.justifyContent = "flex-start";
+    const cancel = node("button", "Cancel");
+    cancel.type = "button";
+    cancel.onclick = () => { confirmingDelete = false; window.render(); };
+    const remove = node("button", "Delete versioned rabbit", "primary");
+    remove.type = "button";
+    const status = node("p", "", "muted");
+    status.setAttribute("role", "status");
+    remove.onclick = async () => {
+      if (remove.disabled) return;
+      remove.disabled = true;
+      cancel.disabled = true;
+      status.textContent = "Deleting cloud rabbit...";
+      try {
+        await controller.deleteCloud(entry);
+        selectedRecord = null;
+        confirmingDelete = false;
+        window.render();
+      } catch (error) {
+        status.textContent = requestMessage(error);
+        remove.disabled = false;
+        cancel.disabled = false;
+      }
+    };
+    controls.append(cancel, remove);
+    view.append(heading, warning, controls, status);
   }
 
   function renderCloudEdit(view, state, entry) {
@@ -373,6 +435,7 @@
     view.replaceChildren();
     if (creating && state.status === "ready") renderCloudCreate(view, state);
     else if (editing && selectedRecord && state.status === "ready") renderCloudEdit(view, state, selectedRecord);
+    else if (confirmingDelete && selectedRecord && state.status === "ready") renderCloudDeleteConfirmation(view, state, selectedRecord);
     else if (selectedRecord && state.status === "ready") renderCloudDetail(view, state, selectedRecord);
     else renderCloudList(view, state);
     return result;
@@ -387,6 +450,7 @@
       createDraft = null;
       editing = false;
       editDraft = null;
+      confirmingDelete = false;
     }
     return priorNav.apply(this, arguments);
   };

@@ -192,6 +192,52 @@ test("reports update validation failures without exposing submitted data", async
   );
 });
 
+test("soft deletes with the canonical typed ID and current revision", async () => {
+  const { client } = await loadClient();
+  let requestBody;
+  const deleted = await client.deleteRabbit({
+    typedId: 's:"rabbit-1"',
+    baseRevision: 4,
+    fetchImpl: async (url, options) => {
+      assert.equal(url, "/api/test-delete-versioned-rabbit");
+      assert.equal(options.method, "POST");
+      assert.equal(options.credentials, "same-origin");
+      requestBody = JSON.parse(options.body);
+      return response({
+        rabbitryId: "dev-auth-test",
+        deleted: true,
+        deletedAt: "2026-11-21T08:00:00.000Z",
+        rabbit: item("rabbit-1", 5)
+      });
+    }
+  });
+  assert.deepEqual(requestBody, {
+    rabbitryId: "dev-auth-test", typedId: 's:"rabbit-1"', baseRevision: 4
+  });
+  assert.equal(deleted.metadata.typedId, 's:"rabbit-1"');
+  assert.equal(deleted.metadata.revision, 5);
+  assert.equal(deleted.metadata.deletedAt, "2026-11-21T08:00:00.000Z");
+});
+
+test("delete conflicts and failures are not retried or accepted as success", async () => {
+  const { client } = await loadClient();
+  let calls = 0;
+  await assert.rejects(client.deleteRabbit({
+    typedId: 's:"rabbit-1"', baseRevision: 1,
+    fetchImpl: async () => { calls += 1; return response({ error: "private" }, 409); }
+  }), (error) => error.status === 409 && /Reload Development D1/.test(client.requestMessage(error)));
+  assert.equal(calls, 1);
+  await assert.rejects(client.deleteRabbit({
+    typedId: 's:"rabbit-1"', baseRevision: 1,
+    fetchImpl: async () => response({
+      rabbitryId: "dev-auth-test", deleted: true, deletedAt: "now", rabbit: item("rabbit-1", 9)
+    })
+  }), (error) => error.category === "malformed");
+  await assert.rejects(client.deleteRabbit({
+    typedId: "", baseRevision: 1, fetchImpl: async () => response({})
+  }), (error) => error.name === "TypeError");
+});
+
 test("maps network and requested HTTP failures without exposing response bodies", async () => {
   const { client } = await loadClient();
   await assert.rejects(
@@ -222,4 +268,5 @@ test("client source allows only versioned GET and create/update POST operations"
   assert.doesNotMatch(source, /localStorage|indexedDB/);
   assert.doesNotMatch(source, /method:\s*"(?:PUT|PATCH|DELETE)"/);
   assert.match(source, /test-update-versioned-rabbit/);
+  assert.match(source, /test-delete-versioned-rabbit/);
 });

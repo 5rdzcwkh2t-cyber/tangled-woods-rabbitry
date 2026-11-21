@@ -99,12 +99,28 @@ async function requestBody(request, mode) {
   }
   const allowed = mode === "create"
     ? new Set(["rabbitryId", "record"])
-    : new Set(["rabbitryId", "baseRevision", "record"]);
+    : mode === "delete"
+      ? new Set(["rabbitryId", "typedId", "baseRevision"])
+      : new Set(["rabbitryId", "baseRevision", "record"]);
   if (Object.keys(body).some(key => !allowed.has(key)) ||
       typeof body.rabbitryId !== "string" || !body.rabbitryId.trim() || body.rabbitryId.length > 256 ||
-      (mode === "update" && (!Number.isSafeInteger(body.baseRevision) || body.baseRevision < 0 ||
+      (mode !== "create" && (!Number.isSafeInteger(body.baseRevision) || body.baseRevision < 0 ||
        body.baseRevision >= Number.MAX_SAFE_INTEGER))) {
     return { error: reply({ error: "Invalid rabbit request" }, 400) };
+  }
+
+  if (mode === "delete") {
+    if (typeof body.typedId !== "string") {
+      return { error: reply({ error: "Invalid rabbit request" }, 400) };
+    }
+    try {
+      if (encodeRabbitId(decodeRabbitId(body.typedId)) !== body.typedId) {
+        throw new TypeError("Non-canonical typed ID");
+      }
+    } catch {
+      return { error: reply({ error: "Invalid rabbit request" }, 400) };
+    }
+    return { rabbitryId: body.rabbitryId, baseRevision: body.baseRevision, typedId: body.typedId };
   }
 
   let record;
@@ -214,6 +230,31 @@ async function insertUpdate(env, rabbitryId, baseRevision, version) {
   ).run();
 }
 
+async function insertTombstone(env, rabbitryId, baseRevision, version, deletedAt) {
+  const { envelope, projections, typedId } = version;
+  return env.DB.prepare(
+    `INSERT INTO rabbit_record_versions
+      (rabbitry_id, typed_id, revision, schema_version, created_at, updated_at,
+       deleted_at, name_normalized, sex_normalized, birth_date_normalized, envelope)
+     SELECT ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+     WHERE EXISTS (
+       SELECT 1 FROM rabbit_record_versions current
+       WHERE current.rabbitry_id = ? AND current.typed_id = ?
+         AND current.revision = ? AND current.deleted_at IS NULL
+         AND current.revision = (
+           SELECT MAX(latest.revision) FROM rabbit_record_versions latest
+           WHERE latest.rabbitry_id = current.rabbitry_id
+             AND latest.typed_id = current.typed_id
+         )
+     )`
+  ).bind(
+    rabbitryId, typedId, envelope.revision, envelope.schemaVersion,
+    envelope.createdAt, envelope.updatedAt, deletedAt,
+    projections.name, projections.sex, projections.birthDate, JSON.stringify(envelope),
+    rabbitryId, typedId, baseRevision
+  ).run();
+}
+
 export async function handleVersionedRabbitWrite({ request, env }, mode) {
   const auth = await authenticate(request, env);
   if (auth.error) return auth.error;
@@ -245,7 +286,7 @@ export async function handleVersionedRabbitWrite({ request, env }, mode) {
       }, 201);
     }
 
-    const typedId = encodeRabbitId(input.record._id);
+    const typedId = mode === "delete" ? input.typedId : encodeRabbitId(input.record._id);
     const latest = await latestRow(env, input.rabbitryId, typedId);
     if (!latest) return reply({ error: "Rabbit changed since the base revision" }, 409);
     let previous;
@@ -258,15 +299,18 @@ export async function handleVersionedRabbitWrite({ request, env }, mode) {
       return reply({ error: "Rabbit changed since the base revision" }, 409);
     }
 
+    const timestamp = new Date().toISOString();
     const version = preparedVersion(
-      input.record,
+      mode === "delete" ? previous.record : input.record,
       input.baseRevision + 1,
       previous.createdAt,
-      new Date().toISOString()
+      timestamp
     );
     let inserted;
     try {
-      inserted = await insertUpdate(env, input.rabbitryId, input.baseRevision, version);
+      inserted = mode === "delete"
+        ? await insertTombstone(env, input.rabbitryId, input.baseRevision, version, timestamp)
+        : await insertUpdate(env, input.rabbitryId, input.baseRevision, version);
     } catch (error) {
       if (uniquenessConflict(error)) {
         return reply({ error: "Rabbit changed since the base revision" }, 409);
@@ -276,7 +320,12 @@ export async function handleVersionedRabbitWrite({ request, env }, mode) {
     if (inserted.meta?.changes !== 1) {
       return reply({ error: "Rabbit changed since the base revision" }, 409);
     }
-    return reply({
+    return reply(mode === "delete" ? {
+      deleted: true,
+      rabbitryId: input.rabbitryId,
+      deletedAt: timestamp,
+      rabbit: responseRabbit(version)
+    } : {
       updated: true,
       rabbitryId: input.rabbitryId,
       rabbit: responseRabbit(version)
