@@ -9,23 +9,37 @@
   }
 
   function createController({ fetchImpl, render, client = window.twVersionedRabbitClient }) {
-    let source = "local";
+    const boundary = window.twRabbitManagementController;
+    if (!boundary || typeof boundary.createController !== "function") {
+      throw new Error("Rabbit management controller unavailable");
+    }
+    const localSource = boundary.localSource();
+    const cloudSource = boundary.versionedSource(client?.DEFAULT_RABBITRY_ID || "dev-auth-test");
+    const management = boundary.createController({ source: localSource });
     let status = "idle";
-    let records = [];
     let message = "";
     let requestVersion = 0;
     let createPromise = null;
     let updatePromise = null;
     let deletePromise = null;
 
-    const snapshot = () => ({ source, status, records: records.slice(), message });
+    const snapshot = () => {
+      const state = management.getState();
+      return {
+        source: state.source.kind === boundary.SOURCE_KINDS.VERSIONED ? "cloud" : "local",
+        sourceIdentity: state.source,
+        status,
+        records: state.records,
+        selected: state.selected,
+        message
+      };
+    };
     const redraw = () => { if (typeof render === "function") render(snapshot()); };
 
     function reset() {
       requestVersion += 1;
-      source = "local";
+      management.activate(localSource);
       status = "idle";
-      records = [];
       message = "";
     }
 
@@ -36,9 +50,8 @@
 
     async function selectCloud() {
       const version = ++requestVersion;
-      source = "cloud";
+      management.activate(cloudSource);
       status = "loading";
-      records = [];
       message = "Loading current Development D1 rabbits…";
       redraw();
 
@@ -50,13 +63,14 @@
           fetchImpl,
           rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test"
         });
-        if (version !== requestVersion || source !== "cloud") return;
-        records = current;
+        if (version !== requestVersion || management.getState().source.key !== cloudSource.key) return;
+        management.setRecords(current);
         status = "ready";
-        message = `${records.length} current Development D1 rabbit${records.length === 1 ? "" : "s"}.`;
+        const count = management.getState().records.length;
+        message = `${count} current Development D1 rabbit${count === 1 ? "" : "s"}.`;
       } catch (error) {
-        if (version !== requestVersion || source !== "cloud") return;
-        records = [];
+        if (version !== requestVersion || management.getState().source.key !== cloudSource.key) return;
+        management.setRecords([]);
         status = "error";
         message = requestMessage(error);
       }
@@ -64,7 +78,7 @@
     }
 
     function createCloud(record) {
-      if (source !== "cloud" || !client || typeof client.createRabbit !== "function") {
+      if (management.getState().source.key !== cloudSource.key || !client || typeof client.createRabbit !== "function") {
         return Promise.reject(new Error("Cloud rabbit creation is unavailable"));
       }
       if (createPromise) return createPromise;
@@ -73,8 +87,8 @@
         rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test",
         record
       }).then((created) => {
-        if (source === "cloud") {
-          records = records.concat([created]);
+        if (management.getState().source.key === cloudSource.key) {
+          created = management.upsert(created);
           message = "Cloud rabbit saved successfully.";
         }
         return created;
@@ -85,7 +99,7 @@
     }
 
     function updateCloud(entry, record) {
-      if (source !== "cloud" || !client || typeof client.updateRabbit !== "function") {
+      if (management.getState().source.key !== cloudSource.key || !client || typeof client.updateRabbit !== "function") {
         return Promise.reject(new Error("Cloud rabbit editing is unavailable"));
       }
       if (!entry || !entry.metadata || !Object.is(entry.metadata.id, record?._id)) {
@@ -98,11 +112,11 @@
         baseRevision: entry.metadata.revision,
         record
       }).then((updated) => {
-        if (source === "cloud") {
-          const index = records.findIndex((candidate) => candidate.metadata.typedId === entry.metadata.typedId);
-          if (index < 0) throw new Error("Cloud rabbit is no longer loaded");
-          records = records.slice();
-          records[index] = updated;
+        if (management.getState().source.key === cloudSource.key) {
+          if (!management.getState().records.some(candidate => candidate.metadata.identityKey === entry.metadata.identityKey)) {
+            throw new Error("Cloud rabbit is no longer loaded");
+          }
+          updated = management.upsert(updated);
           message = "Cloud rabbit updated successfully.";
         }
         return updated;
@@ -111,7 +125,7 @@
     }
 
     function deleteCloud(entry) {
-      if (source !== "cloud" || !client || typeof client.deleteRabbit !== "function") {
+      if (management.getState().source.key !== cloudSource.key || !client || typeof client.deleteRabbit !== "function") {
         return Promise.reject(new Error("Cloud rabbit deletion is unavailable"));
       }
       if (!entry || !entry.metadata || typeof entry.metadata.typedId !== "string") {
@@ -124,8 +138,8 @@
         typedId: entry.metadata.typedId,
         baseRevision: entry.metadata.revision
       }).then((deleted) => {
-        if (source === "cloud") {
-          records = records.filter((candidate) => candidate.metadata.typedId !== entry.metadata.typedId);
+        if (management.getState().source.key === cloudSource.key) {
+          management.remove(entry.metadata.identityKey);
           message = "Cloud rabbit deleted successfully. Its revision history was preserved.";
         }
         return deleted;
@@ -133,7 +147,18 @@
       return deletePromise;
     }
 
-    return { getState: snapshot, reset, selectLocal, selectCloud, createCloud, updateCloud, deleteCloud };
+    function selectRecord(entry) {
+      return management.select(entry?.metadata?.identityKey);
+    }
+
+    function clearSelection() {
+      management.clearSelection();
+    }
+
+    return {
+      getState: snapshot, reset, selectLocal, selectCloud,
+      createCloud, updateCloud, deleteCloud, selectRecord, clearSelection
+    };
   }
 
   window.twCloudRabbitSource = { createController, requestMessage };
@@ -143,7 +168,6 @@
   const priorRender = window.render;
   const priorNav = window.nav;
   let search = "";
-  let selectedRecord = null;
   let creating = false;
   let createDraft = null;
   let editing = false;
@@ -178,14 +202,14 @@
     local.type = "button";
     if (state.source === "local") local.className = "primary";
     local.setAttribute("aria-pressed", String(state.source === "local"));
-    local.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; confirmingDelete = false; controller.selectLocal(); };
+    local.onclick = () => { search = ""; editing = false; editDraft = null; confirmingDelete = false; controller.selectLocal(); };
 
     const cloud = node("button", "Development D1");
     cloud.type = "button";
     if (state.source === "cloud") cloud.className = "primary";
     cloud.setAttribute("aria-pressed", String(state.source === "cloud"));
     cloud.disabled = state.status === "loading";
-    cloud.onclick = () => { search = ""; selectedRecord = null; editing = false; editDraft = null; confirmingDelete = false; controller.selectCloud(); };
+    cloud.onclick = () => { search = ""; editing = false; editDraft = null; confirmingDelete = false; controller.selectCloud(); };
 
     controls.append(local, cloud);
     section.append(heading, help, controls);
@@ -200,7 +224,7 @@
     const rabbit = entry.record;
     const back = node("button", "← Development D1 rabbits");
     back.type = "button";
-    back.onclick = () => { selectedRecord = null; window.render(); };
+    back.onclick = () => { controller.clearSelection(); window.render(); };
     const heading = node("h2", rabbitLabel(rabbit));
     const notice = node("p", "Development D1 — read-only. Editing, deletion, importing, restoring, and photograph changes are unavailable.", "tw-cloud-app-banner");
     notice.textContent = "Development D1 versioned rabbit. Editing or soft deletion creates a new revision; importing, restoring, and photograph changes are unavailable.";
@@ -256,7 +280,7 @@
       status.textContent = "Deleting cloud rabbit...";
       try {
         await controller.deleteCloud(entry);
-        selectedRecord = null;
+        controller.clearSelection();
         confirmingDelete = false;
         window.render();
       } catch (error) {
@@ -300,7 +324,6 @@
       status.textContent = "Saving cloud rabbit...";
       try {
         const updated = await controller.updateCloud(entry, editDraft);
-        selectedRecord = updated;
         editing = false;
         editDraft = null;
         window.render();
@@ -390,7 +413,7 @@
         const created = await controller.createCloud(createDraft);
         creating = false;
         createDraft = null;
-        selectedRecord = created;
+        controller.selectRecord(created);
         window.render();
       } catch (error) {
         status.textContent = requestMessage(error);
@@ -416,7 +439,7 @@
       const title = node("strong", rabbitLabel(rabbit));
       const summary = node("span", [rabbit.Sex, rabbit.Breed, rabbit.Tattoo].filter(Boolean).join(" · "), "muted");
       button.append(title, summary);
-      button.onclick = () => { selectedRecord = entry; window.render(); };
+      button.onclick = () => { controller.selectRecord(entry); window.render(); };
       results.append(button);
     }
     if (!matches.length) results.append(node("p", "No cloud rabbits match this search.", "muted"));
@@ -434,9 +457,9 @@
     }
     view.replaceChildren();
     if (creating && state.status === "ready") renderCloudCreate(view, state);
-    else if (editing && selectedRecord && state.status === "ready") renderCloudEdit(view, state, selectedRecord);
-    else if (confirmingDelete && selectedRecord && state.status === "ready") renderCloudDeleteConfirmation(view, state, selectedRecord);
-    else if (selectedRecord && state.status === "ready") renderCloudDetail(view, state, selectedRecord);
+    else if (editing && state.selected && state.status === "ready") renderCloudEdit(view, state, state.selected);
+    else if (confirmingDelete && state.selected && state.status === "ready") renderCloudDeleteConfirmation(view, state, state.selected);
+    else if (state.selected && state.status === "ready") renderCloudDetail(view, state, state.selected);
     else renderCloudList(view, state);
     return result;
   };
@@ -445,7 +468,7 @@
     if (target !== "Rabbits") {
       controller.reset();
       search = "";
-      selectedRecord = null;
+      controller.clearSelection();
       creating = false;
       createDraft = null;
       editing = false;

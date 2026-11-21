@@ -11,7 +11,13 @@ test("application shell contains the critical local-first features", async () =>
   assert.match(html, /<script src="seed\.js"><\/script>/);
   assert.match(html, /<script src="local-backup-format\.js"><\/script>/);
   assert.match(html, /<script src="cloud-backup-ui\.js"><\/script>/);
+  assert.match(html, /<script src="rabbit-management-controller\.js"><\/script>/);
   assert.match(html, /<script src="cloud-rabbit-source\.js"><\/script>/);
+  assert.ok(
+    html.indexOf('<script src="rabbit-management-controller.js"></script>') <
+      html.indexOf('<script src="cloud-rabbit-source.js"></script>'),
+    "rabbit management controller must load before the cloud adapter"
+  );
   assert.match(html, /\.tabs\{flex-wrap:wrap;overflow:visible/);
   assert.match(html, /@media\(min-width:1024px\)/);
   assert.match(html, /@media\(max-width:600px\)/);
@@ -60,6 +66,7 @@ test("service worker caches the application shell", async () => {
     "./seed.js",
     "./local-backup-format.js",
     "./cloud-backup-ui.js",
+    "./rabbit-management-controller.js",
     "./cloud-rabbit-source.js",
     "./manifest.webmanifest",
     "./icon-192.png",

@@ -5,6 +5,7 @@ import vm from "node:vm";
 
 const sourceUrl = new URL("../cloud-rabbit-source.js", import.meta.url);
 const clientUrl = new URL("../versioned-rabbit-cloud-client.js", import.meta.url);
+const managementUrl = new URL("../rabbit-management-controller.js", import.meta.url);
 
 function versionedRabbit(id = "cloud-1", name = "Cloud Clover", revision = 2) {
   return {
@@ -24,6 +25,7 @@ function versionedRabbit(id = "cloud-1", name = "Cloud Clover", revision = 2) {
 async function loadController(fetchImpl) {
   const source = await readFile(sourceUrl, "utf8");
   const clientSource = await readFile(clientUrl, "utf8");
+  const managementSource = await readFile(managementUrl, "utf8");
   const context = {
     window: {},
     document: {},
@@ -31,6 +33,7 @@ async function loadController(fetchImpl) {
     fetch: fetchImpl,
     structuredClone
   };
+  vm.runInNewContext(managementSource, context, { filename: "rabbit-management-controller.js" });
   vm.runInNewContext(clientSource, context, { filename: "versioned-rabbit-cloud-client.js" });
   vm.runInNewContext(source, context, { filename: "cloud-rabbit-source.js" });
   return { source, createController: context.window.twCloudRabbitSource.createController };
@@ -59,12 +62,15 @@ test("Development D1 source switches without changing local records", async () =
   assert.equal(controller.getState().status, "ready");
   assert.equal(controller.getState().records[0].record.Name, "Cloud Clover");
   assert.equal(controller.getState().records[0].metadata.revision, 2);
+  assert.equal(controller.getState().sourceIdentity.kind, "versioned-cloud");
+  assert.equal(typeof controller.getState().records[0].metadata.identityKey, "string");
   assert.deepEqual(localRecords, before);
 
   controller.selectLocal();
   assert.equal(controller.getState().source, "local");
   assert.equal(controller.getState().status, "idle");
   assert.equal(controller.getState().records.length, 0);
+  assert.equal(controller.getState().sourceIdentity.kind, "local");
   assert.ok(renders.length >= 3);
 });
 
@@ -100,6 +106,32 @@ test("leaving cloud view invalidates an in-flight response", async () => {
   await loading;
   assert.equal(controller.getState().source, "local");
   assert.equal(controller.getState().records.length, 0);
+});
+
+test("cloud selection is source-qualified and remains stable after an update", async () => {
+  const request = async (url) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test", rabbits: [versionedRabbit("selected", "Before", 2)]
+      }) };
+    }
+    if (url === "/api/test-update-versioned-rabbit") {
+      return { ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test", updated: true, rabbit: versionedRabbit("selected", "After", 3)
+      }) };
+    }
+    throw new Error("Unexpected URL");
+  };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  controller.selectRecord(entry);
+  const key = controller.getState().selected.metadata.identityKey;
+  await controller.updateCloud(entry, { ...entry.record, Name: "After" });
+  assert.equal(controller.getState().selected.metadata.identityKey, key);
+  assert.equal(controller.getState().selected.metadata.revision, 3);
+  assert.equal(controller.getState().selected.record.Name, "After");
 });
 
 test("duplicate cloud create submissions share one request and never touch local records", async () => {
@@ -236,6 +268,7 @@ test("failed soft deletion preserves the loaded cloud entry", async () => {
 test("cloud source contains no browser storage or physical-delete paths", async () => {
   const source = await readFile(sourceUrl, "utf8");
   const clientSource = await readFile(clientUrl, "utf8");
+  const managementSource = await readFile(managementUrl, "utf8");
   assert.match(source, /Development D1/);
   assert.match(clientSource, /credentials: "same-origin"/);
   assert.doesNotMatch(source, /localStorage|indexedDB/);
@@ -250,4 +283,5 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   assert.match(source, /Confirm versioned rabbit deletion/);
   assert.match(source, /rabbitLabel\(entry\.record\)/);
   assert.match(source, /Delete versioned rabbit/);
+  assert.doesNotMatch(managementSource, /localStorage|indexedDB|\/api\//);
 });
