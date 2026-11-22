@@ -44,6 +44,7 @@ async function loadController(fetchImpl) {
     MAX_WEIGHT_ENTRIES: context.window.twCloudRabbitSource.MAX_WEIGHT_ENTRIES,
     MILESTONE_FIELDS: context.window.twCloudRabbitSource.MILESTONE_FIELDS,
     buildWeightHistoryFromDraft: context.window.twCloudRabbitSource.buildWeightHistoryFromDraft,
+    clearMilestoneDraft: context.window.twCloudRabbitSource.clearMilestoneDraft,
     createArchiveRevision: context.window.twCloudRabbitSource.createArchiveRevision,
     createController: context.window.twCloudRabbitSource.createController,
     createMilestoneRevision: context.window.twCloudRabbitSource.createMilestoneRevision,
@@ -104,7 +105,7 @@ test("dated cloud weight helpers validate values, duplicates, limits, and comple
 });
 
 test("cloud milestone revisions preserve unknown keys and independent WeanedDate", async () => {
-  const { createMilestoneRevision, validateMilestones } = await loadController(async () => { throw new Error("unused"); });
+  const { clearMilestoneDraft, createMilestoneRevision, validateMilestones } = await loadController(async () => { throw new Error("unused"); });
   const record = {
     _id: "milestone-rabbit",
     WeanedDate: "2026-03-01",
@@ -122,6 +123,10 @@ test("cloud milestone revisions preserve unknown keys and independent WeanedDate
   assert.deepEqual(next.future, { retained: true });
   assert.throws(() => validateMilestones({ weaned: "2026-02-30" }), /malformed/);
   assert.throws(() => validateMilestones([]), /must be an object/);
+  const draft = { weaned: "2026-03-02", separated: "2026-03-15", readyForSale: "2026-04-01" };
+  assert.equal(clearMilestoneDraft(draft, "separated"), draft);
+  assert.deepEqual(draft, { weaned: "2026-03-02", separated: "", readyForSale: "2026-04-01" });
+  assert.throws(() => clearMilestoneDraft(draft, "unknown"), /unavailable/);
 });
 
 test("cloud profile fields include biography, weaning date, and stored parent text", async () => {
@@ -736,5 +741,10 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   assert.match(source, /viewMode === "edit-milestones"/);
   assert.match(source, /The existing Weight field is not changed/);
   assert.match(source, /WeanedDate and relationship records are not changed/);
+  assert.match(source, /Weight history actions/);
+  assert.match(source, /actions\.style\.marginTop = "16px"/);
+  assert.match(source, /Clear \$\{label\} date/);
+  assert.match(source, /clear\.style\.minWidth = "44px"/);
+  assert.match(source, /clearMilestoneDraft\(milestoneDraft, key\)/);
   assert.doesNotMatch(managementSource, /localStorage|indexedDB|\/api\//);
 });

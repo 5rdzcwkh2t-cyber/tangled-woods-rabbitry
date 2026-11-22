@@ -127,6 +127,14 @@
     return revision;
   }
 
+  function clearMilestoneDraft(draft, key) {
+    if (!isPlainObject(draft) || !MILESTONE_FIELDS.some(([field]) => field === key)) {
+      throw new TypeError("Development milestone is unavailable");
+    }
+    draft[key] = "";
+    return draft;
+  }
+
   function nextCloudView(current, action) {
     if (!CLOUD_VIEWS.includes(current)) throw new TypeError("Invalid cloud rabbit view");
     if (action === "reset") return "list";
@@ -320,7 +328,7 @@
 
   window.twCloudRabbitSource = {
     CLOUD_ARCHIVE_FILTERS, CLOUD_PROFILE_FIELDS, CLOUD_VIEWS, MAX_WEIGHT_ENTRIES,
-    MILESTONE_FIELDS, buildWeightHistoryFromDraft, createArchiveRevision, createController, createMilestoneRevision,
+    MILESTONE_FIELDS, buildWeightHistoryFromDraft, clearMilestoneDraft, createArchiveRevision, createController, createMilestoneRevision,
     createWeightRevision, filterCloudRecords, isArchivedRabbit, isDevelopmentPreviewHost,
     isValidDate, nextCloudView, requestMessage, validateMilestones, validateWeightHistory,
     weightFromParts
@@ -515,7 +523,13 @@
       move("weight");
       window.render();
     };
-    card.append(edit);
+    const actions = node("div", undefined, "row");
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "Weight history actions");
+    actions.style.justifyContent = "flex-start";
+    actions.style.marginTop = "16px";
+    actions.append(edit);
+    card.append(actions);
     return card;
   }
 
@@ -840,13 +854,33 @@
     const form = document.createElement("form");
     const inputs = {};
     for (const [key, label] of MILESTONE_FIELDS) {
+      const control = document.createElement("div");
+      control.style.display = "grid";
+      control.style.gridTemplateColumns = "minmax(0, 1fr) auto";
+      control.style.gap = "10px";
+      control.style.alignItems = "end";
+      control.style.marginBottom = "13px";
       const field = node("label", `${label} date (optional)`);
       const input = document.createElement("input");
       input.type = "date";
       input.value = milestoneDraft[key] || "";
+      input.style.marginBottom = "0";
       input.oninput = () => { milestoneDraft[key] = input.value; };
       field.append(input);
-      form.append(field);
+      const clear = node("button", "×");
+      clear.type = "button";
+      clear.setAttribute("aria-label", `Clear ${label} date`);
+      clear.title = `Clear ${label} date`;
+      clear.style.minWidth = "44px";
+      clear.style.minHeight = "44px";
+      clear.style.padding = "0";
+      clear.onclick = () => {
+        clearMilestoneDraft(milestoneDraft, key);
+        input.value = "";
+        input.focus();
+      };
+      control.append(field, clear);
+      form.append(control);
       inputs[key] = input;
     }
     const save = node("button", "Save Milestones", "primary");
