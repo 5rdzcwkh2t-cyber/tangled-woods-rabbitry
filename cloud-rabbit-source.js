@@ -2,8 +2,16 @@
   "use strict";
 
   const PREVIEW_PROJECT = "tangled-woods-rabbitry.pages.dev";
-  const CLOUD_VIEWS = Object.freeze(["list", "detail", "create", "edit", "confirm-delete"]);
+  const CLOUD_VIEWS = Object.freeze([
+    "list", "detail", "create", "edit", "edit-weight", "edit-milestones", "confirm-delete"
+  ]);
   const CLOUD_ARCHIVE_FILTERS = Object.freeze(["active", "archived"]);
+  const MAX_WEIGHT_ENTRIES = 500;
+  const MILESTONE_FIELDS = Object.freeze([
+    ["weaned", "Weaned"],
+    ["separated", "Separated from Doe"],
+    ["readyForSale", "Ready for Sale"]
+  ]);
   const CLOUD_PROFILE_FIELDS = Object.freeze([
     "Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", "DoB", "Father", "Mother",
     "Weight", "Status", "Bio", "WeanedDate", "Notes"
@@ -27,14 +35,95 @@
     return revision;
   }
 
+  function isPlainObject(value) {
+    if (!value || typeof value !== "object" || Array.isArray(value)) return false;
+    const prototype = Object.getPrototypeOf(value);
+    return prototype === null ||
+      (Object.prototype.hasOwnProperty.call(prototype, "constructor") && prototype.constructor?.name === "Object");
+  }
+
+  function isValidDate(value) {
+    if (typeof value !== "string" || !/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split("-").map(Number);
+    const date = new Date(Date.UTC(year, month - 1, day));
+    return date.getUTCFullYear() === year && date.getUTCMonth() === month - 1 && date.getUTCDate() === day;
+  }
+
+  function validateWeightHistory(history) {
+    if (history === undefined) return [];
+    if (!Array.isArray(history)) throw new TypeError("Weight history must be an array");
+    if (history.length > MAX_WEIGHT_ENTRIES) throw new TypeError(`Weight history cannot exceed ${MAX_WEIGHT_ENTRIES} entries`);
+    const dates = new Set();
+    return history.map((entry, index) => {
+      if (!isPlainObject(entry) || !isValidDate(entry.date) ||
+          typeof entry.ounces !== "number" || !Number.isFinite(entry.ounces) || entry.ounces <= 0) {
+        throw new TypeError(`Weight entry ${index + 1} is malformed`);
+      }
+      if (dates.has(entry.date)) throw new TypeError(`Weight date ${entry.date} is duplicated`);
+      dates.add(entry.date);
+      return structuredClone(entry);
+    });
+  }
+
+  function weightFromParts(poundsValue, ouncesValue) {
+    const poundsText = String(poundsValue ?? "").trim();
+    const ouncesText = String(ouncesValue ?? "").trim();
+    if (!poundsText && !ouncesText) throw new TypeError("Weight is required");
+    const pounds = poundsText ? Number(poundsText) : 0;
+    const ounces = ouncesText ? Number(ouncesText) : 0;
+    if (!Number.isInteger(pounds) || pounds < 0 || !Number.isFinite(ounces) || ounces < 0 || ounces >= 16) {
+      throw new TypeError("Enter whole pounds and ounces from 0 to less than 16");
+    }
+    const total = pounds * 16 + ounces;
+    if (total <= 0) throw new TypeError("Weight must be greater than zero");
+    return total;
+  }
+
+  function createWeightRevision(record, history) {
+    if (!isPlainObject(record)) throw new TypeError("Cloud rabbit record is unavailable");
+    validateWeightHistory(record.weightHistory);
+    const revision = structuredClone(record);
+    revision.weightHistory = validateWeightHistory(history);
+    return revision;
+  }
+
+  function validateMilestones(milestones) {
+    if (milestones === undefined) return {};
+    if (!isPlainObject(milestones)) throw new TypeError("Development milestones must be an object");
+    const copy = structuredClone(milestones);
+    for (const [key] of MILESTONE_FIELDS) {
+      if (Object.hasOwn(copy, key) && !isValidDate(copy[key])) {
+        throw new TypeError(`Development milestone ${key} is malformed`);
+      }
+    }
+    return copy;
+  }
+
+  function createMilestoneRevision(record, changes) {
+    if (!isPlainObject(record) || !isPlainObject(changes)) throw new TypeError("Cloud rabbit record is unavailable");
+    const revision = structuredClone(record);
+    const milestones = validateMilestones(record.kitMilestones);
+    for (const [key] of MILESTONE_FIELDS) {
+      if (!Object.hasOwn(changes, key)) continue;
+      const value = String(changes[key] ?? "").trim();
+      if (!value) delete milestones[key];
+      else if (!isValidDate(value)) throw new TypeError(`Development milestone ${key} is malformed`);
+      else milestones[key] = value;
+    }
+    revision.kitMilestones = milestones;
+    return revision;
+  }
+
   function nextCloudView(current, action) {
     if (!CLOUD_VIEWS.includes(current)) throw new TypeError("Invalid cloud rabbit view");
     if (action === "reset") return "list";
     const transitions = {
       list: { select: "detail", create: "create" },
-      detail: { back: "list", edit: "edit", delete: "confirm-delete" },
+      detail: { back: "list", edit: "edit", weight: "edit-weight", milestones: "edit-milestones", delete: "confirm-delete" },
       create: { cancel: "list", success: "detail" },
       edit: { cancel: "detail", success: "detail" },
+      "edit-weight": { cancel: "detail", success: "detail" },
+      "edit-milestones": { cancel: "detail", success: "detail" },
       "confirm-delete": { cancel: "detail", success: "list" }
     };
     const next = transitions[current][action];
@@ -217,9 +306,11 @@
   }
 
   window.twCloudRabbitSource = {
-    CLOUD_ARCHIVE_FILTERS, CLOUD_PROFILE_FIELDS, CLOUD_VIEWS, createArchiveRevision,
-    createController, filterCloudRecords, isArchivedRabbit, isDevelopmentPreviewHost,
-    nextCloudView, requestMessage
+    CLOUD_ARCHIVE_FILTERS, CLOUD_PROFILE_FIELDS, CLOUD_VIEWS, MAX_WEIGHT_ENTRIES,
+    MILESTONE_FIELDS, createArchiveRevision, createController, createMilestoneRevision,
+    createWeightRevision, filterCloudRecords, isArchivedRabbit, isDevelopmentPreviewHost,
+    isValidDate, nextCloudView, requestMessage, validateMilestones, validateWeightHistory,
+    weightFromParts
   };
 
   if (typeof window.render !== "function" || typeof window.nav !== "function") return;
@@ -231,6 +322,8 @@
   let viewMode = "list";
   let createDraft = null;
   let editDraft = null;
+  let weightDraft = null;
+  let milestoneDraft = null;
   const cloudFirstPreview = isDevelopmentPreviewHost(window.location?.hostname);
   let previewInitialized = false;
 
@@ -243,6 +336,8 @@
     archiveFilter = "active";
     createDraft = null;
     editDraft = null;
+    weightDraft = null;
+    milestoneDraft = null;
   }
 
   function operationContext(state, identityKey = null) {
@@ -326,6 +421,115 @@
     return [rabbit.Prefix, rabbit.Name].filter(Boolean).join(" ") || "Unnamed rabbit";
   }
 
+  function weightLabel(ounces) {
+    const remainder = (ounces % 16).toFixed(2).replace(/\.?0+$/, "");
+    return `${Math.floor(ounces / 16)} lb ${remainder} oz`;
+  }
+
+  function renderWeightGraph(history) {
+    const width = 600;
+    const height = 230;
+    const graph = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    graph.setAttribute("viewBox", `0 0 ${width} ${height}`);
+    graph.setAttribute("role", "img");
+    graph.setAttribute("aria-label", "Cloud rabbit weight growth over time");
+    graph.style.width = "100%";
+    graph.style.maxWidth = "700px";
+    graph.style.height = "auto";
+    const values = history.map((entry) => entry.ounces / 16);
+    const times = history.map((entry) => Date.parse(`${entry.date}T12:00:00Z`));
+    const low = Math.max(0, Math.min(...values) - 0.25);
+    const high = Math.max(...values) + 0.25;
+    const first = Math.min(...times);
+    const last = Math.max(...times);
+    const x = (time) => 55 + (time - first) / (last - first) * 490;
+    const y = (value) => 185 - (value - low) / (high - low) * 150;
+    const svgNode = (tag, attributes, text) => {
+      const item = document.createElementNS("http://www.w3.org/2000/svg", tag);
+      for (const [name, value] of Object.entries(attributes)) item.setAttribute(name, value);
+      if (text !== undefined) item.textContent = text;
+      graph.append(item);
+      return item;
+    };
+    svgNode("line", { x1: 55, y1: 185, x2: 545, y2: 185, stroke: "currentColor", "stroke-opacity": ".5" });
+    svgNode("line", { x1: 55, y1: 35, x2: 55, y2: 185, stroke: "currentColor", "stroke-opacity": ".5" });
+    const points = history.map((entry, index) => `${x(times[index])},${y(values[index])}`).join(" ");
+    svgNode("polyline", { points, fill: "none", stroke: "#37876a", "stroke-width": 3, "stroke-linejoin": "round" });
+    history.forEach((entry, index) => {
+      const dot = svgNode("circle", { cx: x(times[index]), cy: y(values[index]), r: 4, fill: "#37876a" });
+      const tip = document.createElementNS("http://www.w3.org/2000/svg", "title");
+      tip.textContent = `${entry.date} — ${weightLabel(entry.ounces)}`;
+      dot.append(tip);
+    });
+    svgNode("text", { x: 55, y: 210, "font-size": 12, fill: "currentColor" }, history[0].date);
+    svgNode("text", { x: 545, y: 210, "text-anchor": "end", "font-size": 12, fill: "currentColor" }, history.at(-1).date);
+    return graph;
+  }
+
+  function renderCloudWeightCard(entry) {
+    const card = node("section", undefined, "card");
+    card.append(node("h3", "Weight history (lb / oz)"));
+    let history;
+    try {
+      history = validateWeightHistory(entry.record.weightHistory);
+    } catch {
+      card.append(node("p", "Existing cloud weight history is malformed and cannot be edited safely.", "tw-cloud-app-banner"));
+      return card;
+    }
+    const chronological = history.slice().sort((left, right) => left.date.localeCompare(right.date));
+    if (!chronological.length) card.append(node("p", "No weights recorded yet.", "muted"));
+    else {
+      const latest = chronological.at(-1);
+      const current = node("p");
+      current.append(node("strong", "Current weight: "), document.createTextNode(`${weightLabel(latest.ounces)} — ${latest.date}`));
+      card.append(current);
+      const list = document.createElement("ul");
+      list.setAttribute("aria-label", "Dated cloud weight history");
+      for (const entry of chronological) list.append(node("li", `${entry.date}: ${weightLabel(entry.ounces)}`));
+      card.append(list);
+      if (chronological.length >= 2) card.append(renderWeightGraph(chronological));
+    }
+    const edit = node("button", "Edit Weight");
+    edit.type = "button";
+    edit.onclick = () => {
+      weightDraft = validateWeightHistory(entry.record.weightHistory).map((measurement) => ({
+        entry: measurement,
+        date: measurement.date,
+        pounds: String(Math.floor(measurement.ounces / 16)),
+        ounces: String(Number((measurement.ounces % 16).toFixed(2)))
+      }));
+      move("weight");
+      window.render();
+    };
+    card.append(edit);
+    return card;
+  }
+
+  function renderCloudMilestoneCard(entry) {
+    const card = node("section", undefined, "card");
+    card.append(node("h3", "Development Milestones"));
+    let milestones;
+    try {
+      milestones = validateMilestones(entry.record.kitMilestones);
+    } catch {
+      card.append(node("p", "Existing cloud milestones are malformed and cannot be edited safely.", "tw-cloud-app-banner"));
+      return card;
+    }
+    for (const [key, label] of MILESTONE_FIELDS) {
+      const fallback = key === "weaned" ? entry.record.WeanedDate : "";
+      card.append(node("p", `${label}: ${milestones[key] || fallback || "Not recorded"}`));
+    }
+    const edit = node("button", "Edit Milestones");
+    edit.type = "button";
+    edit.onclick = () => {
+      milestoneDraft = validateMilestones(entry.record.kitMilestones);
+      move("milestones");
+      window.render();
+    };
+    card.append(edit);
+    return card;
+  }
+
   function renderCloudDetail(view, state, entry) {
     const rabbit = entry.record;
     const back = node("button", "← Rabbits");
@@ -399,7 +603,7 @@
       card.append(line);
     }
     if (!card.childNodes.length) card.append(node("p", "No additional rabbit details are available.", "muted"));
-    view.append(sourceControls(state), back, heading, notice, card);
+    view.append(sourceControls(state), back, heading, notice, card, renderCloudWeightCard(entry), renderCloudMilestoneCard(entry));
   }
 
   function renderCloudDeleteConfirmation(view, state, entry) {
@@ -515,6 +719,164 @@
 
   function renderCloudEdit(view, state, entry) {
     renderCloudForm(view, state, { entry, draft: editDraft, mode: "edit" });
+  }
+
+  function renderCloudWeightEditor(view, state, entry) {
+    view.append(sourceControls(state));
+    const back = node("button", "Back to rabbit details");
+    back.type = "button";
+    back.onclick = () => { weightDraft = null; move("cancel"); window.render(); };
+    const heading = node("h2", `Edit Weight History — ${rabbitLabel(entry.record)}`);
+    const notice = node("p", `Saving creates cloud revision ${entry.metadata.revision + 1}. The existing Weight field is not changed.`, "tw-cloud-app-banner");
+    const form = document.createElement("form");
+    const rows = document.createElement("div");
+    rows.setAttribute("aria-label", "Cloud weight entries");
+    for (const [index, draft] of weightDraft.entries()) {
+      const row = node("div", undefined, "card");
+      row.style.display = "grid";
+      row.style.gridTemplateColumns = "repeat(auto-fit, minmax(140px, 1fr))";
+      row.style.gap = "12px";
+      row.style.alignItems = "end";
+      const dateLabel = node("label", "Date");
+      const date = document.createElement("input");
+      date.type = "date";
+      date.value = draft.date;
+      date.oninput = () => { draft.date = date.value; };
+      dateLabel.append(date);
+      const poundsLabel = node("label", "Pounds");
+      const pounds = document.createElement("input");
+      pounds.type = "number";
+      pounds.min = "0";
+      pounds.step = "1";
+      pounds.value = draft.pounds;
+      pounds.oninput = () => { draft.pounds = pounds.value; };
+      poundsLabel.append(pounds);
+      const ouncesLabel = node("label", "Ounces (0–15.99)");
+      const ounces = document.createElement("input");
+      ounces.type = "number";
+      ounces.min = "0";
+      ounces.max = "15.99";
+      ounces.step = "0.01";
+      ounces.value = draft.ounces;
+      ounces.oninput = () => { draft.ounces = ounces.value; };
+      ouncesLabel.append(ounces);
+      const remove = node("button", "Remove");
+      remove.type = "button";
+      remove.onclick = () => { weightDraft.splice(index, 1); window.render(); };
+      row.append(dateLabel, poundsLabel, ouncesLabel, remove);
+      rows.append(row);
+    }
+    if (!weightDraft.length) rows.append(node("p", "No weight entries. Add one below.", "muted"));
+    const add = node("button", "+ Add weight");
+    add.type = "button";
+    add.disabled = weightDraft.length >= MAX_WEIGHT_ENTRIES;
+    add.onclick = () => {
+      if (weightDraft.length >= MAX_WEIGHT_ENTRIES) return;
+      weightDraft.push({ entry: {}, date: "", pounds: "", ounces: "" });
+      window.render();
+    };
+    const save = node("button", "Save Weight", "primary");
+    save.type = "submit";
+    const cancel = node("button", "Cancel");
+    cancel.type = "button";
+    cancel.onclick = () => { weightDraft = null; move("cancel"); window.render(); };
+    const controls = node("div", undefined, "row");
+    styleCloudActionRow(controls);
+    controls.append(add, save, cancel);
+    const status = node("p", "", "muted");
+    status.setAttribute("role", "status");
+    form.append(rows, controls, status);
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (save.disabled) return;
+      const context = operationContext(state, entry.metadata.identityKey);
+      try {
+        const history = weightDraft.map((draft) => ({
+          ...structuredClone(draft.entry),
+          date: draft.date,
+          ounces: weightFromParts(draft.pounds, draft.ounces)
+        }));
+        const revision = createWeightRevision(entry.record, history);
+        save.disabled = true;
+        add.disabled = true;
+        cancel.disabled = true;
+        status.textContent = "Saving cloud weight history...";
+        const updated = await controller.updateCloud(entry, revision);
+        if (contextIsCurrent(context, true)) {
+          controller.selectRecord(updated);
+          weightDraft = null;
+          move("success");
+          window.render();
+        }
+      } catch (error) {
+        if (contextIsCurrent(context, true)) {
+          status.textContent = error instanceof TypeError ? error.message : requestMessage(error);
+          save.disabled = false;
+          add.disabled = weightDraft.length >= MAX_WEIGHT_ENTRIES;
+          cancel.disabled = false;
+        }
+      }
+    };
+    view.append(back, heading, notice, form);
+  }
+
+  function renderCloudMilestoneEditor(view, state, entry) {
+    view.append(sourceControls(state));
+    const back = node("button", "Back to rabbit details");
+    back.type = "button";
+    back.onclick = () => { milestoneDraft = null; move("cancel"); window.render(); };
+    const heading = node("h2", `Edit Development Milestones — ${rabbitLabel(entry.record)}`);
+    const notice = node("p", `Saving creates cloud revision ${entry.metadata.revision + 1}. WeanedDate and relationship records are not changed.`, "tw-cloud-app-banner");
+    const form = document.createElement("form");
+    const inputs = {};
+    for (const [key, label] of MILESTONE_FIELDS) {
+      const field = node("label", `${label} date (optional)`);
+      const input = document.createElement("input");
+      input.type = "date";
+      input.value = milestoneDraft[key] || "";
+      input.oninput = () => { milestoneDraft[key] = input.value; };
+      field.append(input);
+      form.append(field);
+      inputs[key] = input;
+    }
+    const save = node("button", "Save Milestones", "primary");
+    save.type = "submit";
+    const cancel = node("button", "Cancel");
+    cancel.type = "button";
+    cancel.onclick = () => { milestoneDraft = null; move("cancel"); window.render(); };
+    const controls = node("div", undefined, "row");
+    styleCloudActionRow(controls);
+    controls.append(save, cancel);
+    const status = node("p", "", "muted");
+    status.setAttribute("role", "status");
+    form.append(controls, status);
+    form.onsubmit = async (event) => {
+      event.preventDefault();
+      if (save.disabled) return;
+      const context = operationContext(state, entry.metadata.identityKey);
+      try {
+        const changes = {};
+        for (const [key] of MILESTONE_FIELDS) changes[key] = inputs[key].value;
+        const revision = createMilestoneRevision(entry.record, changes);
+        save.disabled = true;
+        cancel.disabled = true;
+        status.textContent = "Saving cloud milestones...";
+        const updated = await controller.updateCloud(entry, revision);
+        if (contextIsCurrent(context, true)) {
+          controller.selectRecord(updated);
+          milestoneDraft = null;
+          move("success");
+          window.render();
+        }
+      } catch (error) {
+        if (contextIsCurrent(context, true)) {
+          status.textContent = error instanceof TypeError ? error.message : requestMessage(error);
+          save.disabled = false;
+          cancel.disabled = false;
+        }
+      }
+    };
+    view.append(back, heading, notice, form);
   }
 
   function renderCloudList(view, state) {
@@ -639,6 +1001,8 @@
     view.replaceChildren();
     if (viewMode === "create" && state.status === "ready") renderCloudCreate(view, state);
     else if (viewMode === "edit" && state.selected && state.status === "ready") renderCloudEdit(view, state, state.selected);
+    else if (viewMode === "edit-weight" && state.selected && state.status === "ready") renderCloudWeightEditor(view, state, state.selected);
+    else if (viewMode === "edit-milestones" && state.selected && state.status === "ready") renderCloudMilestoneEditor(view, state, state.selected);
     else if (viewMode === "confirm-delete" && state.selected && state.status === "ready") renderCloudDeleteConfirmation(view, state, state.selected);
     else if (viewMode === "detail" && state.selected && state.status === "ready") renderCloudDetail(view, state, state.selected);
     else renderCloudList(view, state);

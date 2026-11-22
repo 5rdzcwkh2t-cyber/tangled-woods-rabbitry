@@ -41,13 +41,72 @@ async function loadController(fetchImpl) {
     CLOUD_ARCHIVE_FILTERS: context.window.twCloudRabbitSource.CLOUD_ARCHIVE_FILTERS,
     CLOUD_PROFILE_FIELDS: context.window.twCloudRabbitSource.CLOUD_PROFILE_FIELDS,
     CLOUD_VIEWS: context.window.twCloudRabbitSource.CLOUD_VIEWS,
+    MAX_WEIGHT_ENTRIES: context.window.twCloudRabbitSource.MAX_WEIGHT_ENTRIES,
+    MILESTONE_FIELDS: context.window.twCloudRabbitSource.MILESTONE_FIELDS,
     createArchiveRevision: context.window.twCloudRabbitSource.createArchiveRevision,
     createController: context.window.twCloudRabbitSource.createController,
+    createMilestoneRevision: context.window.twCloudRabbitSource.createMilestoneRevision,
+    createWeightRevision: context.window.twCloudRabbitSource.createWeightRevision,
     filterCloudRecords: context.window.twCloudRabbitSource.filterCloudRecords,
     isDevelopmentPreviewHost: context.window.twCloudRabbitSource.isDevelopmentPreviewHost,
-    nextCloudView: context.window.twCloudRabbitSource.nextCloudView
+    isValidDate: context.window.twCloudRabbitSource.isValidDate,
+    nextCloudView: context.window.twCloudRabbitSource.nextCloudView,
+    validateMilestones: context.window.twCloudRabbitSource.validateMilestones,
+    validateWeightHistory: context.window.twCloudRabbitSource.validateWeightHistory,
+    weightFromParts: context.window.twCloudRabbitSource.weightFromParts
   };
 }
+
+test("dated cloud weight helpers validate values, duplicates, limits, and complete clones", async () => {
+  const helpers = await loadController(async () => { throw new Error("unused"); });
+  assert.equal(helpers.isValidDate("2024-02-29"), true);
+  assert.equal(helpers.isValidDate("2025-02-29"), false);
+  assert.equal(helpers.weightFromParts("4", "8.5"), 72.5);
+  assert.throws(() => helpers.weightFromParts("4.5", "0"), /whole pounds/);
+  assert.throws(() => helpers.weightFromParts("0", "16"), /less than 16/);
+  assert.throws(() => helpers.weightFromParts("0", "0"), /greater than zero/);
+  const record = {
+    _id: "weight-rabbit", Weight: "legacy free text", unknown: { retained: true },
+    weightHistory: [{ date: "2026-01-01", ounces: 64, note: "preserve" }]
+  };
+  const next = helpers.createWeightRevision(record, [
+    { date: "2026-01-01", ounces: 65, note: "preserve" },
+    { date: "2026-02-01", ounces: 70.25 }
+  ]);
+  assert.equal(next.Weight, "legacy free text");
+  assert.deepEqual(next.unknown, { retained: true });
+  assert.equal(next.weightHistory[0].note, "preserve");
+  assert.notEqual(next, record);
+  assert.notEqual(next.unknown, record.unknown);
+  assert.throws(() => helpers.validateWeightHistory([
+    { date: "2026-01-01", ounces: 60 }, { date: "2026-01-01", ounces: 61 }
+  ]), /duplicated/);
+  assert.throws(() => helpers.validateWeightHistory([{ date: "bad", ounces: 60 }]), /malformed/);
+  assert.throws(() => helpers.validateWeightHistory(Array.from(
+    { length: helpers.MAX_WEIGHT_ENTRIES + 1 }, (_, index) => ({ date: "2026-01-01", ounces: index + 1 })
+  )), /cannot exceed/);
+});
+
+test("cloud milestone revisions preserve unknown keys and independent WeanedDate", async () => {
+  const { createMilestoneRevision, validateMilestones } = await loadController(async () => { throw new Error("unused"); });
+  const record = {
+    _id: "milestone-rabbit",
+    WeanedDate: "2026-03-01",
+    future: { retained: true },
+    kitMilestones: { weaned: "2026-03-02", customFutureMilestone: "preserve" }
+  };
+  const next = createMilestoneRevision(record, {
+    weaned: "", separated: "2026-03-15", readyForSale: "2026-04-01"
+  });
+  assert.equal(next.WeanedDate, "2026-03-01");
+  assert.equal(next.kitMilestones.weaned, undefined);
+  assert.equal(next.kitMilestones.separated, "2026-03-15");
+  assert.equal(next.kitMilestones.readyForSale, "2026-04-01");
+  assert.equal(next.kitMilestones.customFutureMilestone, "preserve");
+  assert.deepEqual(next.future, { retained: true });
+  assert.throws(() => validateMilestones({ weaned: "2026-02-30" }), /malformed/);
+  assert.throws(() => validateMilestones([]), /must be an object/);
+});
 
 test("cloud profile fields include biography, weaning date, and stored parent text", async () => {
   const { CLOUD_PROFILE_FIELDS } = await loadController(async () => { throw new Error("unused"); });
@@ -94,10 +153,16 @@ test("archive revisions are deep complete-record clones that preserve canonical 
 
 test("unified cloud navigation follows explicit list, detail, create, edit, and confirmation states", async () => {
   const { CLOUD_VIEWS, nextCloudView } = await loadController(async () => { throw new Error("unused"); });
-  assert.deepEqual(Array.from(CLOUD_VIEWS), ["list", "detail", "create", "edit", "confirm-delete"]);
+  assert.deepEqual(Array.from(CLOUD_VIEWS), [
+    "list", "detail", "create", "edit", "edit-weight", "edit-milestones", "confirm-delete"
+  ]);
   assert.equal(nextCloudView("list", "select"), "detail");
   assert.equal(nextCloudView("detail", "edit"), "edit");
+  assert.equal(nextCloudView("detail", "weight"), "edit-weight");
+  assert.equal(nextCloudView("detail", "milestones"), "edit-milestones");
   assert.equal(nextCloudView("edit", "cancel"), "detail");
+  assert.equal(nextCloudView("edit-weight", "success"), "detail");
+  assert.equal(nextCloudView("edit-milestones", "cancel"), "detail");
   assert.equal(nextCloudView("detail", "delete"), "confirm-delete");
   assert.equal(nextCloudView("confirm-delete", "cancel"), "detail");
   assert.equal(nextCloudView("confirm-delete", "success"), "list");
@@ -329,6 +394,48 @@ test("successful cloud edits replace only the matching versioned entry and incre
   assert.equal(updated.metadata.revision, 3);
   assert.equal(controller.getState().records[0].record.Name, "Edited Clover");
   assert.deepEqual(localRecords, before);
+});
+
+test("weight and milestone saves append revisions without changing unrelated record fields", async () => {
+  const bodies = [];
+  const initial = {
+    Weight: "do not synchronize",
+    WeanedDate: "2026-01-02",
+    unknown: { nested: ["retain"] },
+    weightHistory: [{ date: "2026-01-01", ounces: 64, source: "legacy" }],
+    kitMilestones: { custom: "retain" }
+  };
+  const request = async (url, options) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) return {
+      ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test", rabbits: [versionedRabbit("health-rabbit", "Health Rabbit", 2, initial)]
+      })
+    };
+    const body = JSON.parse(options.body);
+    bodies.push(body);
+    return { ok: true, status: 200, json: async () => ({
+      rabbitryId: "dev-auth-test", updated: true,
+      rabbit: versionedRabbit("health-rabbit", "Health Rabbit", body.baseRevision + 1, body.record)
+    }) };
+  };
+  const { createController, createMilestoneRevision, createWeightRevision } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const original = controller.getState().records[0];
+  const withWeight = await controller.updateCloud(original, createWeightRevision(original.record, [
+    ...original.record.weightHistory,
+    { date: "2026-02-01", ounces: 70 }
+  ]));
+  const withMilestones = await controller.updateCloud(withWeight, createMilestoneRevision(withWeight.record, {
+    weaned: "2026-02-02", separated: "", readyForSale: ""
+  }));
+  assert.deepEqual(bodies.map((body) => body.baseRevision), [2, 3]);
+  assert.equal(withMilestones.metadata.revision, 4);
+  assert.equal(withMilestones.record.Weight, "do not synchronize");
+  assert.equal(withMilestones.record.WeanedDate, "2026-01-02");
+  assert.deepEqual(withMilestones.record.unknown, { nested: ["retain"] });
+  assert.equal(withMilestones.record.weightHistory[0].source, "legacy");
+  assert.equal(withMilestones.record.kitMilestones.custom, "retain");
 });
 
 test("archive and unarchive use normal revision updates and preserve the complete record", async () => {
@@ -604,5 +711,14 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   assert.match(source, /Cloud rabbit actions/);
   assert.match(source, /Deletion confirmation actions/);
   assert.match(source, /remove\.style\.marginLeft = "auto"/);
+  assert.match(source, /MAX_WEIGHT_ENTRIES = 500/);
+  assert.match(source, /function renderCloudWeightCard/);
+  assert.match(source, /function renderWeightGraph/);
+  assert.match(source, /function renderCloudWeightEditor/);
+  assert.match(source, /function renderCloudMilestoneEditor/);
+  assert.match(source, /viewMode === "edit-weight"/);
+  assert.match(source, /viewMode === "edit-milestones"/);
+  assert.match(source, /The existing Weight field is not changed/);
+  assert.match(source, /WeanedDate and relationship records are not changed/);
   assert.doesNotMatch(managementSource, /localStorage|indexedDB|\/api\//);
 });
