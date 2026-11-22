@@ -38,10 +38,29 @@ async function loadController(fetchImpl) {
   vm.runInNewContext(source, context, { filename: "cloud-rabbit-source.js" });
   return {
     source,
+    CLOUD_VIEWS: context.window.twCloudRabbitSource.CLOUD_VIEWS,
     createController: context.window.twCloudRabbitSource.createController,
-    isDevelopmentPreviewHost: context.window.twCloudRabbitSource.isDevelopmentPreviewHost
+    isDevelopmentPreviewHost: context.window.twCloudRabbitSource.isDevelopmentPreviewHost,
+    nextCloudView: context.window.twCloudRabbitSource.nextCloudView
   };
 }
+
+test("unified cloud navigation follows explicit list, detail, create, edit, and confirmation states", async () => {
+  const { CLOUD_VIEWS, nextCloudView } = await loadController(async () => { throw new Error("unused"); });
+  assert.deepEqual(Array.from(CLOUD_VIEWS), ["list", "detail", "create", "edit", "confirm-delete"]);
+  assert.equal(nextCloudView("list", "select"), "detail");
+  assert.equal(nextCloudView("detail", "edit"), "edit");
+  assert.equal(nextCloudView("edit", "cancel"), "detail");
+  assert.equal(nextCloudView("detail", "delete"), "confirm-delete");
+  assert.equal(nextCloudView("confirm-delete", "cancel"), "detail");
+  assert.equal(nextCloudView("confirm-delete", "success"), "list");
+  assert.equal(nextCloudView("detail", "back"), "list");
+  assert.equal(nextCloudView("list", "create"), "create");
+  assert.equal(nextCloudView("create", "cancel"), "list");
+  assert.equal(nextCloudView("create", "success"), "detail");
+  assert.equal(nextCloudView("edit", "reset"), "list");
+  assert.throws(() => nextCloudView("list", "edit"), /navigation/);
+});
 
 test("cloud-first activation is limited to development Preview hosts", async () => {
   const { isDevelopmentPreviewHost } = await loadController(async () => { throw new Error("unused"); });
@@ -258,6 +277,8 @@ test("successful cloud edits replace only the matching versioned entry and incre
   const updated = await first;
   assert.equal(updateCalls, 1);
   assert.equal(requestBody.baseRevision, 2);
+  assert.deepEqual(requestBody.record.future, { retained: true });
+  assert.equal(requestBody.record._id, entry.metadata.id);
   assert.equal(updated.metadata.revision, 3);
   assert.equal(controller.getState().records[0].record.Name, "Edited Clover");
   assert.deepEqual(localRecords, before);
@@ -325,6 +346,84 @@ test("failed soft deletion preserves the loaded cloud entry", async () => {
   assert.equal(controller.getState().records[0].metadata.revision, 2);
 });
 
+test("late create response cannot populate records after switching away and back", async () => {
+  let finishCreate;
+  const pending = new Promise((resolve) => { finishCreate = resolve; });
+  const request = async (url) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [] }) };
+    }
+    return pending;
+  };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const saving = controller.createCloud({ _id: "late-create", Name: "Late" });
+  controller.selectLocal();
+  await controller.selectCloud();
+  finishCreate({ ok: true, status: 201, json: async () => ({
+    rabbitryId: "dev-auth-test", created: true, rabbit: versionedRabbit("late-create", "Late", 0)
+  }) });
+  await saving;
+  assert.equal(controller.getState().source, "cloud");
+  assert.equal(controller.getState().records.length, 0);
+  assert.equal(controller.getState().selected, null);
+});
+
+test("late update response cannot replace a newly selected rabbit", async () => {
+  let finishUpdate;
+  const pending = new Promise((resolve) => { finishUpdate = resolve; });
+  const request = async (url) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [
+        versionedRabbit("first", "First", 1), versionedRabbit("second", "Second", 4)
+      ] }) };
+    }
+    return pending;
+  };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const [first, second] = controller.getState().records;
+  controller.selectRecord(first);
+  const saving = controller.updateCloud(first, { ...first.record, Name: "First updated" });
+  controller.selectRecord(second);
+  finishUpdate({ ok: true, status: 200, json: async () => ({
+    rabbitryId: "dev-auth-test", updated: true, rabbit: versionedRabbit("first", "First updated", 2)
+  }) });
+  await saving;
+  assert.equal(controller.getState().selected.metadata.id, "second");
+  assert.equal(controller.getState().selected.metadata.revision, 4);
+  assert.equal(controller.getState().selected.record.Name, "Second");
+});
+
+test("late delete response cannot clear a newly selected rabbit", async () => {
+  let finishDelete;
+  const pending = new Promise((resolve) => { finishDelete = resolve; });
+  const request = async (url) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [
+        versionedRabbit("first", "First", 1), versionedRabbit("second", "Second", 4)
+      ] }) };
+    }
+    return pending;
+  };
+  const { createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const [first, second] = controller.getState().records;
+  controller.selectRecord(first);
+  const deleting = controller.deleteCloud(first);
+  controller.selectRecord(second);
+  finishDelete({ ok: true, status: 200, json: async () => ({
+    rabbitryId: "dev-auth-test", deleted: true, deletedAt: "2026-11-21T08:00:00.000Z",
+    rabbit: versionedRabbit("first", "First", 2)
+  }) });
+  await deleting;
+  assert.equal(controller.getState().selected.metadata.id, "second");
+  assert.deepEqual(controller.getState().records.map(item => item.metadata.id), ["second"]);
+});
+
 test("cloud source contains no browser storage or physical-delete paths", async () => {
   const source = await readFile(sourceUrl, "utf8");
   const clientSource = await readFile(clientUrl, "utf8");
@@ -342,6 +441,9 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   assert.match(clientSource, /test-update-versioned-rabbit/);
   assert.match(clientSource, /test-delete-versioned-rabbit/);
   assert.match(source, /Confirm versioned rabbit deletion/);
+  assert.match(source, /function renderCloudForm/);
+  assert.match(source, /viewMode === "confirm-delete"/);
+  assert.doesNotMatch(source, /let (?:creating|editing|confirmingDelete)\s*=/);
   assert.match(source, /rabbitLabel\(entry\.record\)/);
   assert.match(source, /Delete versioned rabbit/);
   assert.doesNotMatch(managementSource, /localStorage|indexedDB|\/api\//);
