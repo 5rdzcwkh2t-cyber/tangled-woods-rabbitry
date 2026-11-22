@@ -593,5 +593,9 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   assert.match(source, /Unarchive rabbit/);
   assert.match(source, /"Bio", "WeanedDate"/);
   assert.match(source, /CLOUD_ARCHIVE_FILTERS/);
+  assert.match(source, /Filter cloud rabbits by archive status/);
+  assert.match(source, /filters\.style\.gap = "12px"/);
+  assert.match(source, /filters\.style\.flexWrap = "wrap"/);
+  assert.match(source, /add\.style\.marginBottom = "14px"/);
   assert.doesNotMatch(managementSource, /localStorage|indexedDB|\/api\//);
 });

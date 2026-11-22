@@ -517,10 +517,17 @@
         status.textContent = requestMessage(error);
       }
     };
+    add.style.marginBottom = "14px";
     view.append(add);
 
     const filters = node("div", undefined, "row");
+    filters.setAttribute("role", "group");
+    filters.setAttribute("aria-label", "Filter cloud rabbits by archive status");
     filters.style.justifyContent = "flex-start";
+    filters.style.alignItems = "center";
+    filters.style.flexWrap = "wrap";
+    filters.style.gap = "12px";
+    filters.style.marginBottom = "8px";
     for (const value of CLOUD_ARCHIVE_FILTERS) {
       const filter = node("button", value === "active" ? "Active" : "Archived");
       filter.type = "button";
