@@ -71,8 +71,8 @@
     if (!poundsText && !ouncesText) throw new TypeError("Weight is required");
     const pounds = poundsText ? Number(poundsText) : 0;
     const ounces = ouncesText ? Number(ouncesText) : 0;
-    if (!Number.isInteger(pounds) || pounds < 0 || !Number.isFinite(ounces) || ounces < 0 || ounces >= 16) {
-      throw new TypeError("Enter whole pounds and ounces from 0 to less than 16");
+    if (!Number.isInteger(pounds) || pounds < 0 || !Number.isInteger(ounces) || ounces < 0 || ounces > 15) {
+      throw new TypeError("Enter whole pounds and whole ounces from 0 through 15");
     }
     const total = pounds * 16 + ounces;
     if (total <= 0) throw new TypeError("Weight must be greater than zero");
@@ -85,6 +85,19 @@
     const revision = structuredClone(record);
     revision.weightHistory = validateWeightHistory(history);
     return revision;
+  }
+
+  function buildWeightHistoryFromDraft(drafts) {
+    if (!Array.isArray(drafts)) throw new TypeError("Weight draft must be an array");
+    return drafts.map((draft) => {
+      if (!isPlainObject(draft) || !isPlainObject(draft.entry)) throw new TypeError("Weight draft is malformed");
+      if (!draft.changed) return structuredClone(draft.entry);
+      return {
+        ...structuredClone(draft.entry),
+        date: draft.date,
+        ounces: weightFromParts(draft.pounds, draft.ounces)
+      };
+    });
   }
 
   function validateMilestones(milestones) {
@@ -307,7 +320,7 @@
 
   window.twCloudRabbitSource = {
     CLOUD_ARCHIVE_FILTERS, CLOUD_PROFILE_FIELDS, CLOUD_VIEWS, MAX_WEIGHT_ENTRIES,
-    MILESTONE_FIELDS, createArchiveRevision, createController, createMilestoneRevision,
+    MILESTONE_FIELDS, buildWeightHistoryFromDraft, createArchiveRevision, createController, createMilestoneRevision,
     createWeightRevision, filterCloudRecords, isArchivedRabbit, isDevelopmentPreviewHost,
     isValidDate, nextCloudView, requestMessage, validateMilestones, validateWeightHistory,
     weightFromParts
@@ -496,7 +509,8 @@
         entry: measurement,
         date: measurement.date,
         pounds: String(Math.floor(measurement.ounces / 16)),
-        ounces: String(Number((measurement.ounces % 16).toFixed(2)))
+        ounces: String(Number((measurement.ounces % 16).toFixed(6))),
+        changed: false
       }));
       move("weight");
       window.render();
@@ -741,7 +755,7 @@
       const date = document.createElement("input");
       date.type = "date";
       date.value = draft.date;
-      date.oninput = () => { draft.date = date.value; };
+      date.oninput = () => { draft.date = date.value; draft.changed = true; };
       dateLabel.append(date);
       const poundsLabel = node("label", "Pounds");
       const pounds = document.createElement("input");
@@ -749,16 +763,16 @@
       pounds.min = "0";
       pounds.step = "1";
       pounds.value = draft.pounds;
-      pounds.oninput = () => { draft.pounds = pounds.value; };
+      pounds.oninput = () => { draft.pounds = pounds.value; draft.changed = true; };
       poundsLabel.append(pounds);
-      const ouncesLabel = node("label", "Ounces (0–15.99)");
+      const ouncesLabel = node("label", "Whole ounces (0–15)");
       const ounces = document.createElement("input");
       ounces.type = "number";
       ounces.min = "0";
-      ounces.max = "15.99";
-      ounces.step = "0.01";
+      ounces.max = "15";
+      ounces.step = "1";
       ounces.value = draft.ounces;
-      ounces.oninput = () => { draft.ounces = ounces.value; };
+      ounces.oninput = () => { draft.ounces = ounces.value; draft.changed = true; };
       ouncesLabel.append(ounces);
       const remove = node("button", "Remove");
       remove.type = "button";
@@ -772,7 +786,7 @@
     add.disabled = weightDraft.length >= MAX_WEIGHT_ENTRIES;
     add.onclick = () => {
       if (weightDraft.length >= MAX_WEIGHT_ENTRIES) return;
-      weightDraft.push({ entry: {}, date: "", pounds: "", ounces: "" });
+      weightDraft.push({ entry: {}, date: "", pounds: "", ounces: "", changed: true });
       window.render();
     };
     const save = node("button", "Save Weight", "primary");
@@ -791,11 +805,7 @@
       if (save.disabled) return;
       const context = operationContext(state, entry.metadata.identityKey);
       try {
-        const history = weightDraft.map((draft) => ({
-          ...structuredClone(draft.entry),
-          date: draft.date,
-          ounces: weightFromParts(draft.pounds, draft.ounces)
-        }));
+        const history = buildWeightHistoryFromDraft(weightDraft);
         const revision = createWeightRevision(entry.record, history);
         save.disabled = true;
         add.disabled = true;

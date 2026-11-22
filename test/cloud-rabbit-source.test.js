@@ -43,6 +43,7 @@ async function loadController(fetchImpl) {
     CLOUD_VIEWS: context.window.twCloudRabbitSource.CLOUD_VIEWS,
     MAX_WEIGHT_ENTRIES: context.window.twCloudRabbitSource.MAX_WEIGHT_ENTRIES,
     MILESTONE_FIELDS: context.window.twCloudRabbitSource.MILESTONE_FIELDS,
+    buildWeightHistoryFromDraft: context.window.twCloudRabbitSource.buildWeightHistoryFromDraft,
     createArchiveRevision: context.window.twCloudRabbitSource.createArchiveRevision,
     createController: context.window.twCloudRabbitSource.createController,
     createMilestoneRevision: context.window.twCloudRabbitSource.createMilestoneRevision,
@@ -61,9 +62,10 @@ test("dated cloud weight helpers validate values, duplicates, limits, and comple
   const helpers = await loadController(async () => { throw new Error("unused"); });
   assert.equal(helpers.isValidDate("2024-02-29"), true);
   assert.equal(helpers.isValidDate("2025-02-29"), false);
-  assert.equal(helpers.weightFromParts("4", "8.5"), 72.5);
+  assert.equal(helpers.weightFromParts("4", "8"), 72);
+  assert.throws(() => helpers.weightFromParts("4", "8.5"), /whole ounces/);
   assert.throws(() => helpers.weightFromParts("4.5", "0"), /whole pounds/);
-  assert.throws(() => helpers.weightFromParts("0", "16"), /less than 16/);
+  assert.throws(() => helpers.weightFromParts("0", "16"), /through 15/);
   assert.throws(() => helpers.weightFromParts("0", "0"), /greater than zero/);
   const record = {
     _id: "weight-rabbit", Weight: "legacy free text", unknown: { retained: true },
@@ -82,6 +84,20 @@ test("dated cloud weight helpers validate values, duplicates, limits, and comple
     { date: "2026-01-01", ounces: 60 }, { date: "2026-01-01", ounces: 61 }
   ]), /duplicated/);
   assert.throws(() => helpers.validateWeightHistory([{ date: "bad", ounces: 60 }]), /malformed/);
+  const fractional = [{ date: "2025-12-01", ounces: 63.75, imported: { retained: true } }];
+  const preservedFractional = helpers.createWeightRevision(
+    { _id: "fractional", weightHistory: fractional },
+    [...fractional, { date: "2026-01-01", ounces: helpers.weightFromParts("4", "0") }]
+  );
+  assert.deepEqual(preservedFractional.weightHistory[0], fractional[0]);
+  assert.equal(preservedFractional.weightHistory[1].ounces, 64);
+  const draftPreserved = helpers.buildWeightHistoryFromDraft([{
+    entry: fractional[0], date: "2025-12-01", pounds: "3", ounces: "15.75", changed: false
+  }]);
+  assert.deepEqual(draftPreserved[0], fractional[0]);
+  assert.throws(() => helpers.buildWeightHistoryFromDraft([{
+    entry: fractional[0], date: "2025-12-02", pounds: "3", ounces: "15.75", changed: true
+  }]), /whole ounces/);
   assert.throws(() => helpers.validateWeightHistory(Array.from(
     { length: helpers.MAX_WEIGHT_ENTRIES + 1 }, (_, index) => ({ date: "2026-01-01", ounces: index + 1 })
   )), /cannot exceed/);
