@@ -7,7 +7,7 @@ const sourceUrl = new URL("../cloud-rabbit-source.js", import.meta.url);
 const clientUrl = new URL("../versioned-rabbit-cloud-client.js", import.meta.url);
 const managementUrl = new URL("../rabbit-management-controller.js", import.meta.url);
 
-function versionedRabbit(id = "cloud-1", name = "Cloud Clover", revision = 2) {
+function versionedRabbit(id = "cloud-1", name = "Cloud Clover", revision = 2, fields = {}) {
   return {
     typedId: `s:${JSON.stringify(id)}`,
     envelope: {
@@ -16,7 +16,7 @@ function versionedRabbit(id = "cloud-1", name = "Cloud Clover", revision = 2) {
       revision,
       createdAt: "2026-11-19T08:00:00.000Z",
       updatedAt: "2026-11-19T09:00:00.000Z",
-      record: { _id: id, Name: name }
+      record: { _id: id, Name: name, ...fields }
     },
     projections: { name, sex: null, birthDate: null }
   };
@@ -38,12 +38,59 @@ async function loadController(fetchImpl) {
   vm.runInNewContext(source, context, { filename: "cloud-rabbit-source.js" });
   return {
     source,
+    CLOUD_ARCHIVE_FILTERS: context.window.twCloudRabbitSource.CLOUD_ARCHIVE_FILTERS,
+    CLOUD_PROFILE_FIELDS: context.window.twCloudRabbitSource.CLOUD_PROFILE_FIELDS,
     CLOUD_VIEWS: context.window.twCloudRabbitSource.CLOUD_VIEWS,
+    createArchiveRevision: context.window.twCloudRabbitSource.createArchiveRevision,
     createController: context.window.twCloudRabbitSource.createController,
+    filterCloudRecords: context.window.twCloudRabbitSource.filterCloudRecords,
     isDevelopmentPreviewHost: context.window.twCloudRabbitSource.isDevelopmentPreviewHost,
     nextCloudView: context.window.twCloudRabbitSource.nextCloudView
   };
 }
+
+test("cloud profile fields include biography, weaning date, and stored parent text", async () => {
+  const { CLOUD_PROFILE_FIELDS } = await loadController(async () => { throw new Error("unused"); });
+  assert.deepEqual(Array.from(CLOUD_PROFILE_FIELDS), [
+    "Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", "DoB", "Father", "Mother",
+    "Weight", "Status", "Bio", "WeanedDate", "Notes"
+  ]);
+});
+
+test("active and archived filters use only the explicit Archived flag", async () => {
+  const { CLOUD_ARCHIVE_FILTERS, filterCloudRecords } = await loadController(async () => { throw new Error("unused"); });
+  const records = [
+    { record: { _id: "missing" } },
+    { record: { _id: "false", Archived: false } },
+    { record: { _id: "true", Archived: true } },
+    { record: { _id: "truthy", Archived: "true" } }
+  ];
+  assert.deepEqual(Array.from(CLOUD_ARCHIVE_FILTERS), ["active", "archived"]);
+  assert.deepEqual(filterCloudRecords(records, "active").map((entry) => entry.record._id), ["missing", "false", "truthy"]);
+  assert.deepEqual(filterCloudRecords(records, "archived").map((entry) => entry.record._id), ["true"]);
+  assert.throws(() => filterCloudRecords(records, "all"), /archive filter/);
+});
+
+test("archive revisions are deep complete-record clones that preserve canonical identity", async () => {
+  const { createArchiveRevision } = await loadController(async () => { throw new Error("unused"); });
+  const original = {
+    _id: 42,
+    Name: "Cloud Clover",
+    Father: "Stored sire text",
+    Mother: "Stored dam text",
+    Bio: "Complete profile",
+    WeanedDate: "2026-06-01",
+    unknown: { nested: [1, { retained: true }] }
+  };
+  const archived = createArchiveRevision(original, true);
+  assert.deepEqual(archived, { ...original, Archived: true });
+  assert.equal(archived._id, 42);
+  assert.notEqual(archived, original);
+  assert.notEqual(archived.unknown, original.unknown);
+  archived.unknown.nested[1].retained = false;
+  assert.equal(original.unknown.nested[1].retained, true);
+  assert.equal(createArchiveRevision(archived, false).Archived, false);
+});
 
 test("unified cloud navigation follows explicit list, detail, create, edit, and confirmation states", async () => {
   const { CLOUD_VIEWS, nextCloudView } = await loadController(async () => { throw new Error("unused"); });
@@ -284,6 +331,71 @@ test("successful cloud edits replace only the matching versioned entry and incre
   assert.deepEqual(localRecords, before);
 });
 
+test("archive and unarchive use normal revision updates and preserve the complete record", async () => {
+  const originalFields = {
+    Bio: "Working rabbit profile",
+    WeanedDate: "2026-05-12",
+    Father: "Stored sire",
+    Mother: "Stored dam",
+    future: { nested: ["preserve", { value: 7 }] }
+  };
+  const requestBodies = [];
+  const request = async (url, options) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      return { ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test", rabbits: [versionedRabbit("profile-1", "Profile Rabbit", 6, originalFields)]
+      }) };
+    }
+    if (url === "/api/test-update-versioned-rabbit") {
+      const body = JSON.parse(options.body);
+      requestBodies.push(body);
+      return { ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test",
+        updated: true,
+        rabbit: versionedRabbit("profile-1", "Profile Rabbit", body.baseRevision + 1, body.record)
+      }) };
+    }
+    throw new Error("Unexpected URL");
+  };
+  const { createArchiveRevision, createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const active = controller.getState().records[0];
+  const archivedRecord = createArchiveRevision(active.record, true);
+  const archived = await controller.updateCloud(active, archivedRecord);
+  assert.equal(archived.metadata.revision, 7);
+  assert.equal(archived.record.Archived, true);
+  assert.deepEqual(archived.record.future, originalFields.future);
+  assert.equal(requestBodies[0].baseRevision, 6);
+  assert.deepEqual(requestBodies[0].record, archivedRecord);
+
+  const restoredRecord = createArchiveRevision(archived.record, false);
+  const restored = await controller.updateCloud(archived, restoredRecord);
+  assert.equal(restored.metadata.revision, 8);
+  assert.equal(restored.record.Archived, false);
+  assert.deepEqual(restored.record.future, originalFields.future);
+  assert.equal(requestBodies[1].baseRevision, 7);
+  assert.deepEqual(requestBodies[1].record, restoredRecord);
+});
+
+test("stale archive conflicts leave the complete loaded profile unchanged", async () => {
+  const request = async (url) => url.startsWith("/api/test-versioned-rabbits")
+    ? { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [
+      versionedRabbit("archive-conflict", "Conflict Rabbit", 4, { Bio: "Keep", unknown: { value: 1 } })
+    ] }) }
+    : { ok: false, status: 409, json: async () => ({ error: "private" }) };
+  const { createArchiveRevision, createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  await assert.rejects(controller.updateCloud(entry, createArchiveRevision(entry.record, true)), (error) => error.status === 409);
+  const unchanged = controller.getState().records[0];
+  assert.equal(unchanged.metadata.revision, 4);
+  assert.equal(unchanged.record.Archived, undefined);
+  assert.equal(unchanged.record.Bio, "Keep");
+  assert.deepEqual(unchanged.record.unknown, { value: 1 });
+});
+
 test("revision conflicts leave the loaded cloud entry unchanged", async () => {
   const request = async (url) => url.startsWith("/api/test-versioned-rabbits")
     ? { ok: true, status: 200, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [versionedRabbit()] }) }
@@ -397,6 +509,37 @@ test("late update response cannot replace a newly selected rabbit", async () => 
   assert.equal(controller.getState().selected.record.Name, "Second");
 });
 
+test("late archive response cannot cross a source switch", async () => {
+  let finishArchive;
+  const pending = new Promise((resolve) => { finishArchive = resolve; });
+  let listCalls = 0;
+  const request = async (url) => {
+    if (url.startsWith("/api/test-versioned-rabbits")) {
+      listCalls += 1;
+      return { ok: true, status: 200, json: async () => ({
+        rabbitryId: "dev-auth-test",
+        rabbits: listCalls === 1 ? [versionedRabbit("archive-late", "Before", 1)] : []
+      }) };
+    }
+    return pending;
+  };
+  const { createArchiveRevision, createController } = await loadController(request);
+  const controller = createController({ fetchImpl: request, render() {} });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  const archiving = controller.updateCloud(entry, createArchiveRevision(entry.record, true));
+  controller.selectLocal();
+  await controller.selectCloud();
+  finishArchive({ ok: true, status: 200, json: async () => ({
+    rabbitryId: "dev-auth-test", updated: true,
+    rabbit: versionedRabbit("archive-late", "Before", 2, { Archived: true })
+  }) });
+  await archiving;
+  assert.equal(controller.getState().source, "cloud");
+  assert.equal(controller.getState().records.length, 0);
+  assert.equal(controller.getState().selected, null);
+});
+
 test("late delete response cannot clear a newly selected rabbit", async () => {
   let finishDelete;
   const pending = new Promise((resolve) => { finishDelete = resolve; });
@@ -446,5 +589,9 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   assert.doesNotMatch(source, /let (?:creating|editing|confirmingDelete)\s*=/);
   assert.match(source, /rabbitLabel\(entry\.record\)/);
   assert.match(source, /Delete versioned rabbit/);
+  assert.match(source, /Archive rabbit/);
+  assert.match(source, /Unarchive rabbit/);
+  assert.match(source, /"Bio", "WeanedDate"/);
+  assert.match(source, /CLOUD_ARCHIVE_FILTERS/);
   assert.doesNotMatch(managementSource, /localStorage|indexedDB|\/api\//);
 });

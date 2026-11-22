@@ -3,6 +3,29 @@
 
   const PREVIEW_PROJECT = "tangled-woods-rabbitry.pages.dev";
   const CLOUD_VIEWS = Object.freeze(["list", "detail", "create", "edit", "confirm-delete"]);
+  const CLOUD_ARCHIVE_FILTERS = Object.freeze(["active", "archived"]);
+  const CLOUD_PROFILE_FIELDS = Object.freeze([
+    "Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", "DoB", "Father", "Mother",
+    "Weight", "Status", "Bio", "WeanedDate", "Notes"
+  ]);
+
+  function isArchivedRabbit(record) {
+    return record?.Archived === true;
+  }
+
+  function filterCloudRecords(records, archiveFilter) {
+    if (!CLOUD_ARCHIVE_FILTERS.includes(archiveFilter)) throw new TypeError("Invalid cloud archive filter");
+    return records.filter((entry) => isArchivedRabbit(entry.record) === (archiveFilter === "archived"));
+  }
+
+  function createArchiveRevision(record, archived) {
+    if (!record || typeof record !== "object" || Array.isArray(record)) {
+      throw new TypeError("Cloud rabbit record is unavailable");
+    }
+    const revision = structuredClone(record);
+    revision.Archived = archived === true;
+    return revision;
+  }
 
   function nextCloudView(current, action) {
     if (!CLOUD_VIEWS.includes(current)) throw new TypeError("Invalid cloud rabbit view");
@@ -194,7 +217,9 @@
   }
 
   window.twCloudRabbitSource = {
-    CLOUD_VIEWS, createController, isDevelopmentPreviewHost, nextCloudView, requestMessage
+    CLOUD_ARCHIVE_FILTERS, CLOUD_PROFILE_FIELDS, CLOUD_VIEWS, createArchiveRevision,
+    createController, filterCloudRecords, isArchivedRabbit, isDevelopmentPreviewHost,
+    nextCloudView, requestMessage
   };
 
   if (typeof window.render !== "function" || typeof window.nav !== "function") return;
@@ -202,6 +227,7 @@
   const priorRender = window.render;
   const priorNav = window.nav;
   let search = "";
+  let archiveFilter = "active";
   let viewMode = "list";
   let createDraft = null;
   let editDraft = null;
@@ -214,6 +240,7 @@
 
   function resetCloudView() {
     viewMode = nextCloudView(viewMode, "reset");
+    archiveFilter = "active";
     createDraft = null;
     editDraft = null;
   }
@@ -299,11 +326,40 @@
       window.render();
     };
     card.append(edit);
+    const archive = node("button", isArchivedRabbit(rabbit) ? "Unarchive rabbit" : "Archive rabbit");
+    archive.type = "button";
+    const archiveStatus = node("p", "", "muted");
+    archiveStatus.setAttribute("role", "status");
+    archive.onclick = async () => {
+      if (archive.disabled) return;
+      const context = operationContext(state, entry.metadata.identityKey);
+      archive.disabled = true;
+      edit.disabled = true;
+      archiveStatus.textContent = isArchivedRabbit(rabbit) ? "Unarchiving cloud rabbit..." : "Archiving cloud rabbit...";
+      try {
+        const updated = await controller.updateCloud(entry, createArchiveRevision(rabbit, !isArchivedRabbit(rabbit)));
+        if (contextIsCurrent(context, true)) {
+          controller.selectRecord(updated);
+          archiveStatus.textContent = isArchivedRabbit(updated.record)
+            ? "Rabbit archived in a new cloud revision."
+            : "Rabbit restored to the active list in a new cloud revision.";
+          window.render();
+        }
+      } catch (error) {
+        if (contextIsCurrent(context, true)) {
+          archiveStatus.textContent = requestMessage(error);
+          archive.disabled = false;
+          edit.disabled = false;
+        }
+      }
+    };
+    card.append(archive, archiveStatus);
     const remove = node("button", "Delete rabbit");
     remove.type = "button";
     remove.onclick = () => { move("delete"); window.render(); };
     card.append(remove);
-    const fields = ["Sex", "Tattoo", "Breed", "Color", "DOB", "DoB", "Father", "Mother", "Weight", "Status", "Notes"];
+    const fields = CLOUD_PROFILE_FIELDS.filter((field) => field !== "Prefix" && field !== "Name");
+    if (Object.hasOwn(rabbit, "DOB") && !Object.hasOwn(rabbit, "DoB")) fields.splice(6, 0, "DOB");
     for (const field of fields) {
       if (rabbit[field] === undefined || rabbit[field] === "") continue;
       const line = node("p");
@@ -378,10 +434,10 @@
     );
     const form = document.createElement("form");
     const dateField = Object.hasOwn(draft, "DOB") && !Object.hasOwn(draft, "DoB") ? "DOB" : "DoB";
-    const fields = ["Prefix", "Name", "Sex", "Tattoo", "Breed", "Color", dateField, "Father", "Mother", "Weight", "Status", "Notes"];
+    const fields = CLOUD_PROFILE_FIELDS.map((field) => field === "DoB" ? dateField : field);
     for (const field of fields) {
       const label = node("label", field);
-      const input = document.createElement(field === "Notes" ? "textarea" : "input");
+      const input = document.createElement(field === "Notes" || field === "Bio" ? "textarea" : "input");
       input.name = field;
       input.value = draft[field] || "";
       input.oninput = () => { draft[field] = input.value; };
@@ -463,6 +519,21 @@
     };
     view.append(add);
 
+    const filters = node("div", undefined, "row");
+    filters.style.justifyContent = "flex-start";
+    for (const value of CLOUD_ARCHIVE_FILTERS) {
+      const filter = node("button", value === "active" ? "Active" : "Archived");
+      filter.type = "button";
+      filter.setAttribute("aria-pressed", String(archiveFilter === value));
+      if (archiveFilter === value) filter.className = "primary";
+      filter.onclick = () => {
+        archiveFilter = value;
+        window.render();
+      };
+      filters.append(filter);
+    }
+    view.append(filters);
+
     const input = document.createElement("input");
     input.type = "search";
     input.placeholder = "Search cloud rabbits by name, breed, tattoo, or parent";
@@ -487,7 +558,8 @@
     if (!results || !count) return;
     const term = search.trim().toLowerCase();
     const fields = ["Prefix", "Name", "Breed", "Tattoo", "Father", "Mother", "Status"];
-    const matches = state.records.filter((entry) => !term || fields.some((field) => String(entry.record[field] || "").toLowerCase().includes(term)));
+    const matches = filterCloudRecords(state.records, archiveFilter)
+      .filter((entry) => !term || fields.some((field) => String(entry.record[field] || "").toLowerCase().includes(term)));
     count.textContent = `${matches.length} rabbit${matches.length === 1 ? "" : "s"}`;
     results.replaceChildren();
     for (const entry of matches) {
@@ -500,7 +572,10 @@
       button.onclick = () => { controller.selectRecord(entry); move("select"); window.render(); };
       results.append(button);
     }
-    if (!matches.length) results.append(node("p", "No cloud rabbits match this search.", "muted"));
+    if (!matches.length) {
+      const noun = archiveFilter === "archived" ? "archived cloud rabbits" : "active cloud rabbits";
+      results.append(node("p", `No ${noun} match this search.`, "muted"));
+    }
   }
 
   window.render = function () {
