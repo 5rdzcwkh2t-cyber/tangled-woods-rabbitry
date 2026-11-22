@@ -268,6 +268,30 @@
     return item;
   }
 
+  function styleCloudActionRow(row) {
+    row.style.justifyContent = "flex-start";
+    row.style.alignItems = "center";
+    row.style.flexWrap = "wrap";
+    row.style.gap = "12px";
+    row.style.marginBottom = "12px";
+  }
+
+  function styleCloudActionButton(button) {
+    button.style.minHeight = "42px";
+    button.style.padding = "10px 16px";
+    button.style.borderRadius = "12px";
+    button.style.display = "inline-flex";
+    button.style.alignItems = "center";
+    button.style.justifyContent = "center";
+  }
+
+  function styleCloudDestructiveButton(button) {
+    styleCloudActionButton(button);
+    button.style.background = "#f8e7e7";
+    button.style.color = "#8a2f2f";
+    button.style.border = "1px solid #e6b8b8";
+  }
+
   function sourceControls(state) {
     const section = node("section", undefined, "card tw-rabbit-source no-print");
     const heading = node("strong", "Rabbit data source");
@@ -318,16 +342,21 @@
     }
     const revision = node("p", `Cloud revision ${entry.metadata.revision}`, "muted");
     card.append(revision);
+    const actions = node("div", undefined, "row");
+    actions.setAttribute("role", "group");
+    actions.setAttribute("aria-label", "Cloud rabbit actions");
+    styleCloudActionRow(actions);
     const edit = node("button", "Edit rabbit", "primary");
     edit.type = "button";
+    styleCloudActionButton(edit);
     edit.onclick = () => {
       editDraft = structuredClone(entry.record);
       move("edit");
       window.render();
     };
-    card.append(edit);
     const archive = node("button", isArchivedRabbit(rabbit) ? "Unarchive rabbit" : "Archive rabbit");
     archive.type = "button";
+    styleCloudActionButton(archive);
     const archiveStatus = node("p", "", "muted");
     archiveStatus.setAttribute("role", "status");
     archive.onclick = async () => {
@@ -353,11 +382,13 @@
         }
       }
     };
-    card.append(archive, archiveStatus);
     const remove = node("button", "Delete rabbit");
     remove.type = "button";
+    remove.style.marginLeft = "auto";
+    styleCloudDestructiveButton(remove);
     remove.onclick = () => { move("delete"); window.render(); };
-    card.append(remove);
+    actions.append(edit, archive, remove);
+    card.append(actions, archiveStatus);
     const fields = CLOUD_PROFILE_FIELDS.filter((field) => field !== "Prefix" && field !== "Name");
     if (Object.hasOwn(rabbit, "DOB") && !Object.hasOwn(rabbit, "DoB")) fields.splice(6, 0, "DOB");
     for (const field of fields) {
@@ -376,12 +407,16 @@
     const heading = node("h2", "Confirm versioned rabbit deletion");
     const warning = node("p", `Delete \"${rabbitLabel(entry.record)}\"? This hides the rabbit by creating revision ${entry.metadata.revision + 1}; its complete history is preserved.`, "tw-cloud-app-banner");
     const controls = node("div", undefined, "row");
-    controls.style.justifyContent = "flex-start";
+    controls.setAttribute("role", "group");
+    controls.setAttribute("aria-label", "Deletion confirmation actions");
+    styleCloudActionRow(controls);
     const cancel = node("button", "Cancel");
     cancel.type = "button";
+    styleCloudActionButton(cancel);
     cancel.onclick = () => { move("cancel"); window.render(); };
-    const remove = node("button", "Delete versioned rabbit", "primary");
+    const remove = node("button", "Delete versioned rabbit");
     remove.type = "button";
+    styleCloudDestructiveButton(remove);
     const status = node("p", "", "muted");
     status.setAttribute("role", "status");
     remove.onclick = async () => {

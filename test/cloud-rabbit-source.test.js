@@ -597,5 +597,12 @@ test("cloud source contains no browser storage or physical-delete paths", async 
   assert.match(source, /filters\.style\.gap = "12px"/);
   assert.match(source, /filters\.style\.flexWrap = "wrap"/);
   assert.match(source, /add\.style\.marginBottom = "14px"/);
+  assert.match(source, /function styleCloudActionRow/);
+  assert.match(source, /row\.style\.gap = "12px"/);
+  assert.match(source, /row\.style\.flexWrap = "wrap"/);
+  assert.match(source, /function styleCloudDestructiveButton/);
+  assert.match(source, /Cloud rabbit actions/);
+  assert.match(source, /Deletion confirmation actions/);
+  assert.match(source, /remove\.style\.marginLeft = "auto"/);
   assert.doesNotMatch(managementSource, /localStorage|indexedDB|\/api\//);
 });
