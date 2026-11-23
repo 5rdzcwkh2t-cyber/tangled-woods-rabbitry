@@ -168,6 +168,13 @@ export function validateLitterRecord(record) {
   validateDate(record.Born, "record.Born");
   if (record.status !== undefined) requireString(record.status, "record.status");
   if (record.Notes !== undefined) requireString(record.Notes, "record.Notes", { empty: true });
+  for (const field of ["Total Kits", "Live Kits", "Stillborn Kits", "Died Kits", "Sold Kits"]) {
+    if (record[field] === undefined) continue;
+    const value = record[field];
+    const valid = (Number.isSafeInteger(value) && value >= 0) ||
+      (typeof value === "string" && /^(0|[1-9]\d*)$/.test(value) && Number.isSafeInteger(Number(value)));
+    if (!valid) throw new BreedingLitterContractError("must be a non-negative integer", pathFor("record", field));
+  }
   return cloneJson(record);
 }
 

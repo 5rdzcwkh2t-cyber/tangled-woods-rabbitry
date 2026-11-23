@@ -242,7 +242,29 @@ function validateStoredLatest(row) {
   }
 }
 
-async function insertRevision(env, rabbitryId, baseRevision, version, deletedAt, requireActiveParents) {
+const noLiveLinkedLitter = `
+  AND NOT EXISTS (
+    SELECT 1 FROM breeding_litter_links link
+    JOIN litter_record_versions litter
+      ON litter.rabbitry_id = link.rabbitry_id AND litter.typed_id = link.litter_typed_id
+    WHERE link.rabbitry_id = ? AND link.breeding_typed_id = ?
+      AND litter.revision = (SELECT MAX(l.revision) FROM litter_record_versions l
+        WHERE l.rabbitry_id = litter.rabbitry_id AND l.typed_id = litter.typed_id)
+      AND litter.deleted_at IS NULL
+  )`;
+
+async function hasLiveLinkedLitter(env, rabbitryId, typedId) {
+  return Boolean(await env.DB.prepare(`SELECT 1 linked FROM breeding_litter_links link
+    JOIN litter_record_versions litter
+      ON litter.rabbitry_id = link.rabbitry_id AND litter.typed_id = link.litter_typed_id
+    WHERE link.rabbitry_id = ? AND link.breeding_typed_id = ?
+      AND litter.revision = (SELECT MAX(l.revision) FROM litter_record_versions l
+        WHERE l.rabbitry_id = litter.rabbitry_id AND l.typed_id = litter.typed_id)
+      AND litter.deleted_at IS NULL LIMIT 1`).bind(rabbitryId, typedId).first());
+}
+
+async function insertRevision(env, rabbitryId, baseRevision, version, deletedAt, requireActiveParents,
+                              protectLinkedLitter = false) {
   return env.DB.prepare(
     `INSERT INTO breeding_record_versions ${insertColumns}
      SELECT ${insertPlaceholders}
@@ -254,14 +276,16 @@ async function insertRevision(env, rabbitryId, baseRevision, version, deletedAt,
                                  WHERE latest.rabbitry_id = current.rabbitry_id
                                    AND latest.typed_id = current.typed_id)
      )
-     ${requireActiveParents ? parentConditions : ""}`
+     ${requireActiveParents ? parentConditions : ""}
+     ${protectLinkedLitter ? noLiveLinkedLitter : ""}`
   ).bind(
     ...insertBindings(rabbitryId, version, deletedAt),
     rabbitryId, version.typedId, baseRevision,
     ...(requireActiveParents ? [
       rabbitryId, version.projections.doeTypedId,
       rabbitryId, version.projections.buckTypedId
-    ] : [])
+     ] : []),
+    ...(protectLinkedLitter ? [rabbitryId, version.typedId] : [])
   ).run();
 }
 
@@ -303,6 +327,9 @@ export async function handleVersionedBreedingWrite({ request, env }, mode) {
     if (previous.revision !== input.baseRevision || latest.deleted_at !== null) {
       return reply({ error: "Breeding changed since the base revision" }, 409);
     }
+    if (mode === "delete" && await hasLiveLinkedLitter(env, input.rabbitryId, typedId)) {
+      return reply({ error: "Breeding has a live linked litter" }, 409);
+    }
     const timestamp = new Date().toISOString();
     const version = preparedVersion(
       mode === "delete" ? previous.record : input.record,
@@ -314,7 +341,7 @@ export async function handleVersionedBreedingWrite({ request, env }, mode) {
     let inserted;
     try { inserted = await insertRevision(
       env, input.rabbitryId, input.baseRevision, version, mode === "delete" ? timestamp : null,
-      mode !== "delete"
+      mode !== "delete", mode === "delete"
     ); }
     catch (error) {
       if (uniquenessConflict(error)) return reply({ error: "Breeding changed since the base revision" }, 409);
