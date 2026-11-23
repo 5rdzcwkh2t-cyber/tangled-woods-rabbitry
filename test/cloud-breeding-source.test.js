@@ -150,5 +150,5 @@ test("cloud breeding source contains no local storage, litter creation, or finan
   const { source } = await load();
   assert.doesNotMatch(source, /localStorage|indexedDB|createLitter|reservation|payment|expense/);
   assert.doesNotMatch(source, /\bsave\s*\(/);
-  assert.match(source, /Cloud litter creation is not enabled/);
+  assert.doesNotMatch(source, /Cloud litter creation is not enabled/);
 });

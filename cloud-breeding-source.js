@@ -284,7 +284,7 @@
 
   function renderList(view, state) {
     view.append(sourceControls(state), node("h2", "Cloud breeding planner"));
-    const notice = node("p", "Versioned development records are isolated from local breedings. Cloud litter creation is not enabled.", "tw-cloud-app-banner");
+    const notice = node("p", "Versioned development records are isolated from local breedings.", "tw-cloud-app-banner");
     const status = node("p", state.message, "muted");
     status.setAttribute("role", "status");
     view.append(notice, status);

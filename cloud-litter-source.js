@@ -17,24 +17,41 @@
     return breedings.filter(entry => isObject(entry?.record) && typeof entry?.metadata?.typedId === "string" &&
       entry.record.status === "Kindled" && !linked.has(entry.metadata.typedId));
   }
+  function applyLitterFields(base, values) {
+    const record = clone(base);
+    for (const [key, value] of Object.entries(values)) {
+      if (["Total Kits", "Sold Kits", "Died Kits"].includes(key) && value === "") delete record[key];
+      else record[key] = value;
+    }
+    return record;
+  }
+  function rabbitName(rabbits, typedId, fallback) {
+    const rabbit = rabbits.find(entry => entry?.metadata?.typedId === typedId);
+    return rabbit ? [rabbit.record.Prefix, rabbit.record.Name].filter(Boolean).join(" ") || fallback : fallback;
+  }
+  function breedingLabel(breeding, rabbits) {
+    const record = breeding.record;
+    return `${rabbitName(rabbits, record.doeTypedId, "Unavailable doe")} × ${rabbitName(rabbits, record.buckTypedId, "Unavailable buck")} · ${record.date}`;
+  }
   function createController({ fetchImpl, render, litterClient = window.twVersionedLitterClient,
-    breedingClient = window.twVersionedBreedingClient }) {
+    breedingClient = window.twVersionedBreedingClient, rabbitClient = window.twVersionedRabbitClient }) {
     const rabbitryId = litterClient?.DEFAULT_RABBITRY_ID || "dev-auth-test";
-    let source = "local", status = "idle", message = "", litters = [], breedings = [], selectedKey = null;
+    let source = "local", status = "idle", message = "", litters = [], breedings = [], rabbits = [], selectedKey = null;
     let requestVersion = 0, createPromise = null, updatePromise = null, deletePromise = null;
     const selected = () => litters.find(entry => identityKey(entry, rabbitryId) === selectedKey) || null;
-    const snapshot = () => ({ source, status, message, rabbitryId, litters: litters.slice(), breedings: breedings.slice(), selected: selected() });
+    const snapshot = () => ({ source, status, message, rabbitryId, litters: litters.slice(), breedings: breedings.slice(), rabbits: rabbits.slice(), selected: selected() });
     const redraw = () => { if (typeof render === "function") render(snapshot()); };
-    function reset() { requestVersion += 1; source = "local"; status = "idle"; message = ""; litters = []; breedings = []; selectedKey = null; }
+    function reset() { requestVersion += 1; source = "local"; status = "idle"; message = ""; litters = []; breedings = []; rabbits = []; selectedKey = null; }
     function selectLocal() { reset(); redraw(); }
     async function selectCloud() {
       const version = ++requestVersion; source = "cloud"; status = "loading"; message = "Loading development cloud litters...";
-      litters = []; breedings = []; selectedKey = null; redraw();
+      litters = []; breedings = []; rabbits = []; selectedKey = null; redraw();
       try {
         if (!litterClient?.listLitters || !breedingClient?.listBreedings) throw new Error("Cloud clients unavailable");
-        const loaded = await Promise.all([litterClient.listLitters({ fetchImpl, rabbitryId }), breedingClient.listBreedings({ fetchImpl, rabbitryId })]);
+        const loaded = await Promise.all([litterClient.listLitters({ fetchImpl, rabbitryId }), breedingClient.listBreedings({ fetchImpl, rabbitryId }),
+          rabbitClient?.listRabbits ? rabbitClient.listRabbits({ fetchImpl, rabbitryId }) : Promise.resolve([])]);
         if (version !== requestVersion || source !== "cloud") return;
-        litters = loaded[0].map(clone); breedings = loaded[1].map(clone); status = "ready";
+        litters = loaded[0].map(clone); breedings = loaded[1].map(clone); rabbits = loaded[2].map(clone); status = "ready";
         message = `${litters.length} development cloud litter${litters.length === 1 ? "" : "s"}.`;
       } catch (error) { if (version !== requestVersion || source !== "cloud") return; status = "error"; message = litterClient?.requestMessage?.(error) || "Cloud litters could not be loaded."; }
       redraw();
@@ -79,7 +96,7 @@
     }
     return { getState: snapshot, initialize, reset, selectLocal, selectCloud, selectRecord, loadDetail, clearSelection, createCloud, updateCloud, deleteCloud };
   }
-  window.twCloudLitterSource = { createController, eligibleBreedings, isDevelopmentPreviewHost };
+  window.twCloudLitterSource = { applyLitterFields, breedingLabel, createController, eligibleBreedings, isDevelopmentPreviewHost };
   if (typeof window.render !== "function" || typeof window.nav !== "function" || !window.document) return;
   const priorRender = window.render, priorNav = window.nav;
   const controller = createController({ fetchImpl: (...args) => fetch(...args), render: () => window.render() });
@@ -97,16 +114,16 @@
   function value(record, key) { const v = record[key]; return v === undefined || v === null || v === "" ? "—" : String(v); }
   function summary(entry) { const r = entry.record; return `${value(r, "Name")} · born ${value(r, "Born")} · ${value(r, "Total Kits")} kits`; }
   function editRecord(form, base) {
-    const r = clone(base); for (const [name, key] of [["Name", "Name"], ["Born", "Born"], ["Breed", "Breed"], ["TotalKits", "Total Kits"], ["SoldKits", "Sold Kits"], ["DiedKits", "Died Kits"], ["Notes", "Notes"]]) {
-      const element = form.elements[name]; if (element) r[key] = element.value;
-    } return r;
+    const values = {}; for (const [name, key] of [["Name", "Name"], ["Born", "Born"], ["Breed", "Breed"], ["TotalKits", "Total Kits"], ["SoldKits", "Sold Kits"], ["DiedKits", "Died Kits"], ["Notes", "Notes"]]) {
+      const element = form.elements[name]; if (element) values[key] = element.value;
+    } return applyLitterFields(base, values);
   }
   function renderForm(view, state, editing) {
     const entry = editing ? state.selected : null, form = node("form", undefined, "card tw-litter-form");
     form.append(node("h3", editing ? "Edit cloud litter" : "Create cloud litter"));
     let breedingSelect;
     if (!editing) { const label = node("label", "Eligible kindled breeding"); breedingSelect = node("select"); breedingSelect.name = "Breeding";
-      const eligible = eligibleBreedings(state.breedings, state.litters); for (const b of eligible) { const option = node("option", `${b.record.date} · ${b.metadata.typedId}`); option.value = b.metadata.typedId; breedingSelect.append(option); }
+      const eligible = eligibleBreedings(state.breedings, state.litters); for (const b of eligible) { const option = node("option", breedingLabel(b, state.rabbits)); option.value = b.metadata.typedId; breedingSelect.append(option); }
       if (!eligible.length) breedingSelect.append(Object.assign(node("option", "No eligible kindled breedings"), { value: "" })); label.append(breedingSelect); form.append(label);
     } else { const r = entry.record; form.append(node("p", `Breeding ${value(r, "Bred")} · Doe: ${value(r, "Dam")} · Buck: ${value(r, "Sire")}`, "muted")); }
     const r = entry?.record || {}; field(form, "Litter name", "Name", r.Name); field(form, "Birth date", "Born", r.Born, "date"); field(form, "Breed", "Breed", r.Breed);
