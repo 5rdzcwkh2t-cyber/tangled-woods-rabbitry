@@ -1,0 +1,25 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import vm from "node:vm";
+const sourceUrl = new URL("../cloud-litter-source.js", import.meta.url);
+const breeding = (id, status = "Kindled") => ({ record: { _id: id, date: "2026-10-01", status }, metadata: { typedId: `s:${JSON.stringify(id)}`, revision: 0 } });
+const litter = (id, revision = 0, fields = {}) => ({ record: { _id: id, breedingTypedId: 's:"b-1"', damTypedId: 's:"d"', sireTypedId: 's:"s"', Dam: "Doe", Sire: "Buck", Bred: "2026-10-01", Born: "2026-11-01", unknown: { kept: true }, ...fields }, metadata: { typedId: `s:${JSON.stringify(id)}`, revision } });
+async function load(clients = {}) { const source = await readFile(sourceUrl, "utf8"); const context = { window: { ...clients }, document: {}, structuredClone, console, fetch: async () => {} }; vm.runInNewContext(source, context); return { source, helpers: context.window.twCloudLitterSource }; }
+test("eligible breedings are kindled, live, and have no litter", async () => { const { helpers } = await load(); const result = helpers.eligibleBreedings([breeding("b-1"), breeding("b-2"), breeding("b-3", "Bred")], [litter("l-1")]); assert.deepEqual(result.map(x => x.record._id), ["b-2"]); });
+test("controller isolates local data and loads both cloud sources", async () => { let writes = 0; const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [litter("l-1")] };
+  const breedingClient = { listBreedings: async () => [breeding("b-1")] }; const { helpers } = await load({ localStorage: { setItem() { writes += 1; } }, save() { writes += 1; } });
+  const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient }); await controller.initialize("cloud-development.tangled-woods-rabbitry.pages.dev"); assert.equal(controller.getState().source, "cloud"); assert.equal(controller.getState().litters.length, 1); assert.equal(writes, 0); });
+test("create is de-duplicated and prevents duplicate litter links", async () => { let calls = 0, resolveCreate; const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [], createLitter: () => { calls += 1; return new Promise(resolve => { resolveCreate = resolve; }); } };
+  const { helpers } = await load(); const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient: { listBreedings: async () => [breeding("b-1")] } }); await controller.selectCloud();
+  const first = controller.createCloud('s:"b-1"', { _id: "l-1" }); const second = controller.createCloud('s:"b-1"', { _id: "l-1" }); assert.equal(first, second); assert.equal(calls, 1); resolveCreate(litter("l-1")); await first;
+  await assert.rejects(controller.createCloud('s:"b-1"', { _id: "l-2" }), /eligible breeding/); });
+test("updates preserve unknown fields and reject parent reassignment", async () => { const original = litter("l-1"); let sent;
+  const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [original], updateLitter: async args => { sent = args.record; return litter("l-1", 1, args.record); } };
+  const { helpers } = await load(); const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient: { listBreedings: async () => [] } }); await controller.selectCloud(); controller.selectRecord(original);
+  await controller.updateCloud(original, { ...structuredClone(original.record), Notes: "changed" }); assert.deepEqual(sent.unknown, { kept: true }); assert.equal(controller.getState().selected.metadata.revision, 1);
+  await assert.rejects(controller.updateCloud(controller.getState().selected, { ...controller.getState().selected.record, damTypedId: 's:"other"' }), /parent relationship/); });
+test("soft-delete removes only the selected cloud litter", async () => { const first = litter("one", 0, { breedingTypedId: 's:"b-1"' }), second = litter("two", 0, { breedingTypedId: 's:"b-2"' }); let calls = 0;
+  const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [first, second], deleteLitter: async () => { calls += 1; return litter("one", 1); } };
+  const { helpers } = await load(); const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient: { listBreedings: async () => [] } }); await controller.selectCloud(); controller.selectRecord(first); await controller.deleteCloud(first); assert.equal(calls, 1); assert.deepEqual(controller.getState().litters.map(x => x.record._id), ["two"]); });
+test("cloud adapter contains no local persistence or financial features", async () => { const { source } = await load(); assert.doesNotMatch(source, /localStorage|indexedDB|payment|reservation|financial/i); assert.doesNotMatch(source, /\bsave\s*\(/); });
