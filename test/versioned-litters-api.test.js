@@ -87,6 +87,27 @@ test("create-from-breeding snapshots canonical relationships and lists detail wi
   assert.equal(f.database.prepare("SELECT COUNT(*) count FROM litters").get().count, 0);
 });
 
+test("trigger-inclusive D1 change counts do not turn a committed create into a false conflict", async (t) => {
+  const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);
+  const base = f.env.DB;
+  const env = { ...f.env, DB: { prepare(sql) {
+    const prepared = base.prepare(sql);
+    if (!/^INSERT INTO litter_record_versions/.test(sql)) return prepared;
+    return { bind(...values) {
+      const bound = prepared.bind(...values);
+      return { async run() {
+        const result = await bound.run();
+        return { ...result, meta: { ...result.meta, changes: 2 } };
+      } };
+    } };
+  } } };
+  const response = await createLitter({ request: post("test-create-versioned-litter", f.accessToken,
+    { rabbitryId: "woods", breedingTypedId: BREEDING, record: draft() }), env });
+  assert.equal(response.status, 201, await response.clone().text());
+  assert.equal(f.database.prepare("SELECT COUNT(*) count FROM litter_record_versions").get().count, 1);
+  assert.equal(f.database.prepare("SELECT COUNT(*) count FROM breeding_litter_links").get().count, 1);
+});
+
 test("authorization, origin, environment, role, malformed dates, and kit counts fail closed", async (t) => {
   const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);
   assert.equal((await createLitter({ request: post("test-create-versioned-litter", null,

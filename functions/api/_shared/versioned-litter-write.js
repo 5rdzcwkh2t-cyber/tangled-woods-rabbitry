@@ -15,6 +15,7 @@ const reply = (body, status = 200) =>
 const storageUnavailable = error => /no such table|does not exist/i.test(String(error?.message || error));
 const uniquenessConflict = error => /(?:unique|primary key) constraint/i.test(String(error?.message || error)) &&
   /litter_record_versions|breeding_litter_links/i.test(String(error?.message || error));
+const wroteRows = result => Number.isSafeInteger(result?.meta?.changes) && result.meta.changes >= 1;
 
 async function authenticate(request, env) {
   const result = await verifyAccessJwt(request, env);
@@ -222,7 +223,9 @@ export async function handleVersionedLitterWrite({ request, env }, mode) {
         if (uniquenessConflict(error)) return reply({ error: "Breeding already has a litter or litter already exists" }, 409);
         throw error;
       }
-      if (inserted.meta?.changes !== 1) return reply({ error: "Breeding changed before litter creation" }, 409);
+      // Remote D1 includes the AFTER INSERT link trigger in meta.changes, while local SQLite reports only
+      // the outer litter insert. Either positive count means the atomic insert and trigger completed.
+      if (!wroteRows(inserted)) return reply({ error: "Breeding changed before litter creation" }, 409);
       return reply({ created: true, rabbitryId: input.rabbitryId, litter: responseLitter(version) }, 201);
     }
     const typedId = mode === "delete" ? input.typedId : encodeRabbitId(input.record._id);
