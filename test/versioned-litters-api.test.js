@@ -2,6 +2,10 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import { onRequestPost as createLitter } from "../functions/api/test-create-versioned-litter.js";
+import { onRequestPost as createKit } from "../functions/api/test-create-versioned-kit.js";
+import { onRequestPost as createRabbit } from "../functions/api/test-create-versioned-rabbit.js";
+import { onRequestPost as updateRabbit } from "../functions/api/test-update-versioned-rabbit.js";
+import { onRequestPost as deleteRabbit } from "../functions/api/test-delete-versioned-rabbit.js";
 import { onRequestPost as updateLitter } from "../functions/api/test-update-versioned-litter.js";
 import { onRequestPost as deleteLitter } from "../functions/api/test-delete-versioned-litter.js";
 import { onRequestGet as readLitters } from "../functions/api/test-versioned-litters.js";
@@ -67,6 +71,136 @@ function draft(id = "litter-1", overrides = {}) {
 async function create(f, record = draft()) {
   return createLitter({ request: post("test-create-versioned-litter", f.accessToken,
     { rabbitryId: "woods", breedingTypedId: BREEDING, record }), env: f.env });
+}
+
+function kitRequest(f, litterTypedId, record = { _id: "kit-1", Name: "Kit" }, rabbitryId = "woods") {
+  return post("test-create-versioned-kit", f.accessToken, { rabbitryId, litterTypedId, record });
+}
+
+test("kits inherit snapshots, accept Unknown, retain profile fields and protect their litter until tombstoned", async t => {
+  const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);
+  const { litter } = await json(await create(f, draft("litter-1", { Breed: "Rex" })), 201);
+  const request = kitRequest(f, litter.typedId, { _id: "kit-1", Name: "Kit", Father: "Ignored",
+    Breed: "Ignored", DoB: "2020-01-01", weightHistory: [{ date: "2026-12-02", ounces: 4 }] });
+  const base = f.env.DB;
+  const inclusive = { ...f.env, DB: { prepare(sql) {
+    const statement = base.prepare(sql);
+    if (!sql.startsWith("INSERT INTO rabbit_record_versions")) return statement;
+    return { bind(...args) {
+      return { async run() {
+        const result = await statement.bind(...args).run();
+        if (result.meta.changes > 0) result.meta.changes += 1;
+        return result;
+      } };
+    } };
+  } } };
+  const { rabbit } = await json(await createKit({ request, env: inclusive }), 201);
+  const record = rabbit.envelope.record;
+  assert.deepEqual([record.litterTypedId, record.FatherTypedId, record.MotherTypedId,
+    record.Father, record.Mother, record.DoB, record.Breed, record.Sex],
+  [litter.typedId, BUCK, DOE, "Historical Buck", "Historical Doe", "2026-12-02", "Rex", "Unknown"]);
+  const update = (record, baseRevision = 0) => updateRabbit({ env: f.env, request: post(
+    "test-update-versioned-rabbit", f.accessToken, { rabbitryId: "woods", baseRevision, record }) });
+  for (const field of ["litterTypedId", "FatherTypedId", "MotherTypedId", "Father", "Mother"]) {
+    assert.equal((await update({ ...record, [field]: "changed" })).status, 400);
+  }
+  const revised = await json(await update({ ...record, Archived: true,
+    kitMilestones: { weaned: "2027-01-02" } }), 200);
+  assert.deepEqual(revised.rabbit.envelope.record.weightHistory, record.weightHistory);
+  assert.equal(revised.rabbit.envelope.record.kitMilestones.weaned, "2027-01-02");
+  assert.equal((await update(record)).status, 409);
+  const removeLitter = () => deleteLitter({ env: f.env, request: post("test-delete-versioned-litter",
+    f.accessToken, { rabbitryId: "woods", typedId: litter.typedId, baseRevision: 0 }) });
+  assert.equal((await removeLitter()).status, 409);
+  const removed = await json(await deleteRabbit({ env: f.env, request: post("test-delete-versioned-rabbit",
+    f.accessToken, { rabbitryId: "woods", typedId: rabbit.typedId, baseRevision: 1 }) }), 200);
+  assert.equal(removed.rabbit.envelope.record.litterTypedId, litter.typedId);
+  assert.equal(removed.rabbit.envelope.record.FatherTypedId, BUCK);
+  assert.equal((await removeLitter()).status, 200);
+  assert.equal((await createKit({ request: kitRequest(f, litter.typedId), env: f.env })).status, 404);
+});
+
+test("kit creation rejects invalid relationships, unauthorized requests and ordinary rabbit injection", async t => {
+  const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);
+  const { litter } = await json(await create(f), 201);
+  const submit = request => createKit({ request, env: f.env });
+  addRabbitry(f.database, "other");
+  addRabbitry(f.database, "viewer", "viewer");
+  assert.equal((await submit(kitRequest(f, litter.typedId, undefined, "other"))).status, 404);
+  assert.equal((await submit(kitRequest(f, litter.typedId, undefined, "viewer"))).status, 403);
+  assert.equal((await submit(kitRequest(f, "raw-id"))).status, 400);
+  assert.equal((await submit(post("test-create-versioned-kit", null, {}))).status, 401);
+  assert.equal((await createKit({ request: kitRequest(f, litter.typedId),
+    env: { ...f.env, TEST_DATABASE: "production" } })).status, 403);
+  const record = { _id: "ordinary", Name: "Ordinary" };
+  const rabbitRequest = (handler, endpoint, input) => handler({ env: f.env, request: post(endpoint,
+    f.accessToken, { rabbitryId: "woods", ...input }) });
+  assert.equal((await rabbitRequest(createRabbit, "test-create-versioned-rabbit",
+    { record: { ...record, litterTypedId: litter.typedId } })).status, 400);
+  assert.equal((await rabbitRequest(createRabbit, "test-create-versioned-rabbit", { record })).status, 201);
+  assert.equal((await rabbitRequest(updateRabbit, "test-update-versioned-rabbit",
+    { record: { ...record, FatherTypedId: BUCK }, baseRevision: 0 })).status, 400);
+  seedRabbit(f.database, "woods", "buck-1", "Historical Buck", "Doe", { revision: 1 });
+  assert.equal((await submit(kitRequest(f, litter.typedId))).status, 409);
+  f.database.exec("DROP TRIGGER trg_litter_delete_requires_no_live_kits");
+  assert.equal((await submit(kitRequest(f, litter.typedId))).status, 503);
+});
+
+for (const parentState of ["missing", "tombstoned"]) {
+  test(`kit creation rejects a ${parentState} parent`, async t => {
+    const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);
+    const { litter } = await json(await create(f), 201);
+    if (parentState === "missing") {
+      f.database.prepare("DELETE FROM rabbit_record_versions WHERE rabbitry_id = ? AND typed_id = ?")
+        .run("woods", BUCK);
+    } else {
+      seedRabbit(f.database, "woods", "buck-1", "Historical Buck", "Buck", { revision: 1, deletedAt: now });
+    }
+    await json(await createKit({ request: kitRequest(f, litter.typedId), env: f.env }), 409);
+    assert.equal(f.database.prepare("SELECT COUNT(*) AS count FROM rabbit_record_versions WHERE typed_id = ?")
+      .get(encodeRabbitId("kit-1")).count, 0);
+  });
+}
+
+test("a subsequent parent soft deletion preserves the kit's historical parent references", async t => {
+  const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);
+  const { litter } = await json(await create(f), 201);
+  const { rabbit: kit } = await json(await createKit({
+    request: kitRequest(f, litter.typedId), env: f.env
+  }), 201);
+  await json(await deleteRabbit({ env: f.env, request: post("test-delete-versioned-rabbit",
+    f.accessToken, { rabbitryId: "woods", typedId: BUCK, baseRevision: 0 }) }), 200);
+  const row = f.database.prepare(
+    "SELECT envelope, deleted_at FROM rabbit_record_versions WHERE rabbitry_id = ? AND typed_id = ? ORDER BY revision DESC LIMIT 1"
+  ).get("woods", kit.typedId);
+  assert.equal(row.deleted_at, null);
+  assert.deepEqual(JSON.parse(row.envelope), kit.envelope);
+  assert.equal(kit.envelope.record.FatherTypedId, BUCK);
+  assert.equal(kit.envelope.record.Father, "Historical Buck");
+});
+
+for (const kitWins of [true, false]) {
+  test(`concurrent litter deletion and kit creation are atomic when ${kitWins ? "creation" : "deletion"} wins`, async t => {
+    const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);
+    const { litter } = await json(await create(f), 201);
+    const add = env => createKit({ env, request: kitRequest(f, litter.typedId) });
+    const remove = env => deleteLitter({ env, request: post("test-delete-versioned-litter",
+      f.accessToken, { rabbitryId: "woods", typedId: litter.typedId, baseRevision: 0 }) });
+    const losingTable = kitWins ? "litter_record_versions" : "rabbit_record_versions";
+    let winningResponse;
+    const env = { ...f.env, DB: { prepare(sql) {
+      const statement = f.env.DB.prepare(sql);
+      if (!sql.startsWith(`INSERT INTO ${losingTable}`)) return statement;
+      return { bind(...args) {
+        return { async run() {
+          winningResponse = await (kitWins ? add : remove)(f.env);
+          return statement.bind(...args).run();
+        } };
+      } };
+    } } };
+    assert.equal((await (kitWins ? remove : add)(env)).status, 409);
+    assert.equal(winningResponse.status, kitWins ? 201 : 200);
+  });
 }
 
 test("create-from-breeding snapshots canonical relationships and lists detail without legacy writes", async (t) => {

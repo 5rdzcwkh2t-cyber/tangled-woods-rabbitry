@@ -7,6 +7,8 @@ import {
   validateRabbitRecord
 } from "../../../rabbit-record-contract.js";
 import { decodeRabbitId, encodeRabbitId } from "../../../rabbit-typed-id.js";
+import { validateTypedRelationshipId } from "../../../breeding-litter-contracts.js";
+import { inheritKitRecord, kitLinkFields, kitSnapshotFields } from "./kit-relationship.js";
 
 const WRITE_ROLES = new Set(["owner", "admin", "editor"]);
 const ALLOWED_ROLES = new Set([...WRITE_ROLES, "viewer"]);
@@ -97,14 +99,17 @@ async function requestBody(request, mode) {
   if (!body || typeof body !== "object" || Array.isArray(body)) {
     return { error: reply({ error: "Invalid rabbit request" }, 400) };
   }
-  const allowed = mode === "create"
+  const creating = mode === "create" || mode === "create-kit";
+  const allowed = mode === "create-kit"
+    ? new Set(["rabbitryId", "litterTypedId", "record"])
+    : mode === "create"
     ? new Set(["rabbitryId", "record"])
     : mode === "delete"
       ? new Set(["rabbitryId", "typedId", "baseRevision"])
       : new Set(["rabbitryId", "baseRevision", "record"]);
   if (Object.keys(body).some(key => !allowed.has(key)) ||
       typeof body.rabbitryId !== "string" || !body.rabbitryId.trim() || body.rabbitryId.length > 256 ||
-      (mode !== "create" && (!Number.isSafeInteger(body.baseRevision) || body.baseRevision < 0 ||
+      (!creating && (!Number.isSafeInteger(body.baseRevision) || body.baseRevision < 0 ||
        body.baseRevision >= Number.MAX_SAFE_INTEGER))) {
     return { error: reply({ error: "Invalid rabbit request" }, 400) };
   }
@@ -126,6 +131,8 @@ async function requestBody(request, mode) {
   let record;
   try {
     record = validateRabbitRecord(body.record);
+    if (mode === "create-kit") validateTypedRelationshipId(body.litterTypedId, "litterTypedId");
+    if (creating && kitLinkFields.some(field => Object.hasOwn(record, field))) throw new TypeError();
   } catch {
     return { error: reply({ error: "Invalid rabbit record" }, 400) };
   }
@@ -134,7 +141,7 @@ async function requestBody(request, mode) {
       Object.is(record._id, -0)) {
     return { error: reply({ error: "Rabbit ID is invalid" }, 400) };
   }
-  return { rabbitryId: body.rabbitryId, baseRevision: body.baseRevision, record };
+  return { rabbitryId: body.rabbitryId, baseRevision: body.baseRevision, litterTypedId: body.litterTypedId, record };
 }
 
 function preparedVersion(record, revision, createdAt, updatedAt) {
@@ -268,17 +275,33 @@ export async function handleVersionedRabbitWrite({ request, env }, mode) {
     const access = await authorize(env, input.rabbitryId, auth.subject);
     if (access.error) return access.error;
 
-    if (mode === "create") {
+    if (mode === "create" || mode === "create-kit") {
+      let record = input.record;
+      if (mode === "create-kit") {
+        const guards = await env.DB.prepare(
+          "SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'trigger' AND name IN ('trg_kit_create_requires_live_litter', 'trg_litter_delete_requires_no_live_kits')"
+        ).first();
+        if (guards?.count !== 2) return reply({ error: "Versioned kit storage unavailable" }, 503);
+        record = await inheritKitRecord(env, input.rabbitryId, input.litterTypedId, record);
+        if (!record) return reply({ error: "Live litter not found" }, 404);
+      }
       const timestamp = new Date().toISOString();
-      const version = preparedVersion(input.record, 0, timestamp, timestamp);
+      let version;
+      try { version = preparedVersion(record, 0, timestamp, timestamp); }
+      catch { return reply({ error: "Invalid rabbit record" }, 400); }
       let inserted;
       try {
         inserted = await insertCreate(env, input.rabbitryId, version);
       } catch (error) {
         if (uniquenessConflict(error)) return reply({ error: "Rabbit already exists" }, 409);
+        if (mode === "create-kit" && String(error?.message).includes("kit_relationship_changed")) {
+          return reply({ error: "Litter or kit parents are no longer valid" }, 409);
+        }
         throw error;
       }
-      if (inserted.meta?.changes !== 1) return reply({ error: "Rabbit already exists" }, 409);
+      if (!Number.isSafeInteger(inserted.meta?.changes) || inserted.meta.changes < 1) {
+        return reply({ error: "Rabbit already exists" }, 409);
+      }
       return reply({
         created: true,
         rabbitryId: input.rabbitryId,
@@ -300,6 +323,12 @@ export async function handleVersionedRabbitWrite({ request, env }, mode) {
     }
 
     const timestamp = new Date().toISOString();
+    if (mode === "update") {
+      const immutable = Object.hasOwn(previous.record, "litterTypedId") ? kitSnapshotFields : kitLinkFields;
+      if (immutable.some(field => !Object.is(input.record[field], previous.record[field]))) {
+        return reply({ error: "Kit relationships cannot be changed" }, 400);
+      }
+    }
     const version = preparedVersion(
       mode === "delete" ? previous.record : input.record,
       input.baseRevision + 1,

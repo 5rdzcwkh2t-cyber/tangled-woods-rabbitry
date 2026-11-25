@@ -256,6 +256,9 @@ export async function handleVersionedLitterWrite({ request, env }, mode) {
     try { inserted = await insertRevision(env, input.rabbitryId, input.baseRevision, version,
       mode === "delete" ? timestamp : null); }
     catch (error) {
+      if (mode === "delete" && String(error?.message).includes("litter_has_live_kits")) {
+        return reply({ error: "Litter has live linked kits" }, 409);
+      }
       if (uniquenessConflict(error)) return reply({ error: "Litter changed since the base revision" }, 409);
       throw error;
     }
