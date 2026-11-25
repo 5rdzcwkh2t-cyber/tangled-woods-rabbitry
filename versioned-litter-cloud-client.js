@@ -68,7 +68,11 @@
     });
     const body = await responseBody(response); if (!response.ok) throw httpError(response.status, "list");
     if (!isObject(body) || body.rabbitryId !== rabbitryId || !Array.isArray(body.litters)) throw malformed();
-    return body.litters.map(item => validateItem(item, rabbitryId));
+    if (!Array.isArray(body.claimedBreedingTypedIds) || !body.claimedBreedingTypedIds.every(canonicalTypedId)) {
+      throw malformed();
+    }
+    return { litters: body.litters.map(item => validateItem(item, rabbitryId)),
+      claimedBreedingTypedIds: body.claimedBreedingTypedIds.slice() };
   }
   async function getLitter({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, typedId } = {}) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");

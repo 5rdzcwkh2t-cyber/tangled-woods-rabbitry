@@ -7,8 +7,10 @@ const sourceUrl = new URL("../cloud-litter-source.js", import.meta.url);
 const breeding = (id, status = "Kindled") => ({ record: { _id: id, date: "2026-10-01", status, doeTypedId: 's:"d"', buckTypedId: 's:"s"' }, metadata: { typedId: `s:${JSON.stringify(id)}`, revision: 0 } });
 const rabbit = (id, name, prefix = "") => ({ record: { _id: id, Name: name, Prefix: prefix }, metadata: { typedId: `s:${JSON.stringify(id)}` } });
 const litter = (id, revision = 0, fields = {}) => ({ record: { _id: id, breedingTypedId: 's:"b-1"', damTypedId: 's:"d"', sireTypedId: 's:"s"', Dam: "Doe", Sire: "Buck", Bred: "2026-10-01", Born: "2026-11-01", unknown: { kept: true }, ...fields }, metadata: { typedId: `s:${JSON.stringify(id)}`, revision } });
+const listing = (litters, deleted = []) => ({ litters,
+  claimedBreedingTypedIds: [...litters, ...deleted].map(entry => entry.record.breedingTypedId) });
 async function load(clients = {}) { const source = await readFile(sourceUrl, "utf8"); const context = { window: { ...clients }, document: {}, structuredClone, console, fetch: async () => {} }; vm.runInNewContext(source, context); return { source, helpers: context.window.twCloudLitterSource }; }
-test("eligible breedings are kindled, live, and have no litter", async () => { const { helpers } = await load(); const result = helpers.eligibleBreedings([breeding("b-1"), breeding("b-2"), breeding("b-3", "Bred")], [litter("l-1")]); assert.deepEqual(result.map(x => x.record._id), ["b-2"]); });
+test("eligible breedings are kindled, live, and have no litter", async () => { const { helpers } = await load(); const result = helpers.eligibleBreedings([breeding("b-1"), breeding("b-2"), breeding("b-3", "Bred")], ['s:"b-1"']); assert.deepEqual(result.map(x => x.record._id), ["b-2"]); });
 test("blank optional kit counts are omitted instead of violating the integer contract", async () => { const { helpers } = await load();
   const serverFields = { _id: "l-1", breedingTypedId: 's:"b-1"', damTypedId: 's:"d"', sireTypedId: 's:"s"', Dam: "Doe", Sire: "Buck", Bred: "2026-10-01", Born: "2026-11-23" };
   assert.throws(() => validateLitterRecord({ ...serverFields, "Total Kits": "6", "Sold Kits": "", "Died Kits": "" }), /non-negative integer/);
@@ -19,20 +21,20 @@ test("blank optional kit counts are omitted instead of violating the integer con
 test("breeding selector labels use parent names and breeding date", async () => { const { helpers } = await load();
   assert.equal(helpers.breedingLabel(breeding("b-1"), [rabbit("d", "Cloud Doe", "TEST"), rabbit("s", "Cloud Buck", "TEST")]), "TEST Cloud Doe × TEST Cloud Buck · 2026-10-01");
 });
-test("controller isolates local data and loads both cloud sources", async () => { let writes = 0; const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [litter("l-1")] };
+test("controller isolates local data and loads both cloud sources", async () => { let writes = 0; const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => listing([litter("l-1")]) };
   const breedingClient = { listBreedings: async () => [breeding("b-1")] }; const { helpers } = await load({ localStorage: { setItem() { writes += 1; } }, save() { writes += 1; } });
   const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient }); await controller.initialize("cloud-development.tangled-woods-rabbitry.pages.dev"); assert.equal(controller.getState().source, "cloud"); assert.equal(controller.getState().litters.length, 1); assert.equal(writes, 0); });
-test("create is de-duplicated and preserves the canonical breeding typed ID", async () => { let calls = 0, resolveCreate, sentTypedId; const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [], createLitter: ({ breedingTypedId }) => { calls += 1; sentTypedId = breedingTypedId; return new Promise(resolve => { resolveCreate = resolve; }); } };
+test("create is de-duplicated and preserves the canonical breeding typed ID", async () => { let calls = 0, resolveCreate, sentTypedId; const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => listing([]), createLitter: ({ breedingTypedId }) => { calls += 1; sentTypedId = breedingTypedId; return new Promise(resolve => { resolveCreate = resolve; }); } };
   const { helpers } = await load(); const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient: { listBreedings: async () => [breeding("b-1")] } }); await controller.selectCloud();
   const first = controller.createCloud('s:"b-1"', { _id: "l-1" }); const second = controller.createCloud('s:"b-1"', { _id: "l-1" }); assert.equal(first, second); assert.equal(calls, 1); assert.equal(sentTypedId, 's:"b-1"'); resolveCreate(litter("l-1")); await first;
   await assert.rejects(controller.createCloud('s:"b-1"', { _id: "l-2" }), /eligible breeding/); });
 test("updates preserve unknown fields and reject parent reassignment", async () => { const original = litter("l-1"); let sent;
-  const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [original], updateLitter: async args => { sent = args.record; return litter("l-1", 1, args.record); } };
+  const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => listing([original]), updateLitter: async args => { sent = args.record; return litter("l-1", 1, args.record); } };
   const { helpers } = await load(); const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient: { listBreedings: async () => [] } }); await controller.selectCloud(); controller.selectRecord(original);
   await controller.updateCloud(original, { ...structuredClone(original.record), Notes: "changed" }); assert.deepEqual(sent.unknown, { kept: true }); assert.equal(controller.getState().selected.metadata.revision, 1);
   await assert.rejects(controller.updateCloud(controller.getState().selected, { ...controller.getState().selected.record, damTypedId: 's:"other"' }), /parent relationship/); });
 test("soft-delete removes only the selected cloud litter", async () => { const first = litter("one", 0, { breedingTypedId: 's:"b-1"' }), second = litter("two", 0, { breedingTypedId: 's:"b-2"' }); let calls = 0;
-  const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => [first, second], deleteLitter: async () => { calls += 1; return litter("one", 1); } };
+  const litterClient = { DEFAULT_RABBITRY_ID: "dev-auth-test", listLitters: async () => listing([first, second]), deleteLitter: async () => { calls += 1; return litter("one", 1); } };
   const { helpers } = await load(); const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient: { listBreedings: async () => [] } }); await controller.selectCloud(); controller.selectRecord(first); await controller.deleteCloud(first); assert.equal(calls, 1); assert.deepEqual(controller.getState().litters.map(x => x.record._id), ["two"]); });
 test("cloud adapter contains no local persistence or financial features", async () => { const { source } = await load(); assert.doesNotMatch(source, /localStorage|indexedDB|payment|reservation|financial/i); assert.doesNotMatch(source, /\bsave\s*\(/); });
 test("breeding planner no longer claims cloud litter creation is disabled", async () => { const source = await readFile(new URL("../cloud-breeding-source.js", import.meta.url), "utf8"); assert.doesNotMatch(source, /Cloud litter creation is not enabled/); });
@@ -43,7 +45,7 @@ test("count and add availability reflect successful writes without reloading", a
   const second = litter("l-2", 0, { breedingTypedId: 's:"b-2"' });
   const controller = helpers.createController({
     litterClient: {
-      listLitters: async () => { loads += 1; return [first]; },
+      listLitters: async () => listing([first], ++loads === 1 ? [] : [second]),
       createLitter: async () => second,
       deleteLitter: async () => ({})
     },
@@ -55,8 +57,13 @@ test("count and add availability reflect successful writes without reloading", a
   await controller.createCloud('s:"b-2"', second.record);
   assert.equal(controller.getState().message, "2 development cloud litters.");
   assert.equal(controller.getState().addUnavailableMessage,
-    "No eligible breedings are available. All completed breedings already have litters, or no breedings are marked Kindled.");
+    "No eligible breedings are available. All Kindled breedings have already been used to create litters, or no breedings are marked Kindled.");
   await controller.deleteCloud(second);
   assert.equal(controller.getState().message, "1 development cloud litter.");
+  assert.equal(controller.getState().eligible.length, 0);
+  await assert.rejects(controller.createCloud('s:"b-2"', second.record), /eligible breeding/);
   assert.equal(loads, 1);
+  await controller.selectCloud();
+  assert.equal(controller.getState().litters.length, 1);
+  assert.equal(controller.getState().eligible.length, 0);
 });

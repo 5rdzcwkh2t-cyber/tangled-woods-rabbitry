@@ -84,7 +84,11 @@ export async function onRequestGet({ request, env }) {
       if (!litters.length) return reply({ error: "Litter not found" }, 404);
       return reply({ rabbitryId: input.rabbitryId, litter: litters[0] });
     }
-    return reply({ rabbitryId: input.rabbitryId, litters });
+    const claims = await env.DB.prepare(
+      "SELECT breeding_typed_id FROM breeding_litter_links WHERE rabbitry_id = ? ORDER BY breeding_typed_id"
+    ).bind(input.rabbitryId).all();
+    return reply({ rabbitryId: input.rabbitryId, litters,
+      claimedBreedingTypedIds: claims.results.map(row => row.breeding_typed_id) });
   } catch (error) {
     if (storageUnavailable(error)) return reply({ error: "Versioned litter storage unavailable" }, 503);
     console.error("Versioned litter read failed", error);

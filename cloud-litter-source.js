@@ -1,7 +1,7 @@
 (function () {
   "use strict";
   const PREVIEW_PROJECT = "tangled-woods-rabbitry.pages.dev";
-  const NO_ELIGIBLE_BREEDINGS = "No eligible breedings are available. All completed breedings already have litters, or no breedings are marked Kindled.";
+  const NO_ELIGIBLE_BREEDINGS = "No eligible breedings are available. All Kindled breedings have already been used to create litters, or no breedings are marked Kindled.";
   const clone = value => typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
   const isObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
   function isDevelopmentPreviewHost(hostname) {
@@ -12,9 +12,9 @@
     if (typeof entry?.metadata?.typedId !== "string") throw new TypeError("Litter identity is unavailable");
     return JSON.stringify(["versioned-litter", rabbitryId, entry.metadata.typedId]);
   }
-  function eligibleBreedings(breedings, litters) {
-    if (!Array.isArray(breedings) || !Array.isArray(litters)) throw new TypeError("Cloud records must be arrays");
-    const linked = new Set(litters.map(entry => entry?.record?.breedingTypedId).filter(Boolean));
+  function eligibleBreedings(breedings, claimedBreedingTypedIds) {
+    if (!Array.isArray(breedings)) throw new TypeError("Cloud breedings must be an array");
+    const linked = new Set(claimedBreedingTypedIds);
     return breedings.filter(entry => isObject(entry?.record) && typeof entry?.metadata?.typedId === "string" &&
       entry.record.status === "Kindled" && !linked.has(entry.metadata.typedId));
   }
@@ -38,15 +38,17 @@
     breedingClient = window.twVersionedBreedingClient, rabbitClient = window.twVersionedRabbitClient }) {
     const rabbitryId = litterClient?.DEFAULT_RABBITRY_ID || "dev-auth-test";
     let source = "local", status = "idle", message = "", litters = [], breedings = [], rabbits = [], selectedKey = null;
+    let claims = new Set();
     let requestVersion = 0, createPromise = null, updatePromise = null, deletePromise = null;
     const selected = () => litters.find(entry => identityKey(entry, rabbitryId) === selectedKey) || null;
     const snapshot = () => ({
       source, status, rabbitryId, litters: litters.slice(), breedings: breedings.slice(),
       rabbits: rabbits.slice(), selected: selected(),
+      eligible: eligibleBreedings(breedings, claims),
       message: status === "ready"
         ? `${litters.length} development cloud litter${litters.length === 1 ? "" : "s"}.`
         : message,
-      addUnavailableMessage: status === "ready" && !eligibleBreedings(breedings, litters).length
+      addUnavailableMessage: status === "ready" && !eligibleBreedings(breedings, claims).length
         ? NO_ELIGIBLE_BREEDINGS : ""
     });
     const redraw = () => { if (typeof render === "function") render(snapshot()); };
@@ -54,13 +56,14 @@
     function selectLocal() { reset(); redraw(); }
     async function selectCloud() {
       const version = ++requestVersion; source = "cloud"; status = "loading"; message = "Loading development cloud litters...";
-      litters = []; breedings = []; rabbits = []; selectedKey = null; redraw();
+      litters = []; breedings = []; rabbits = []; claims.clear(); selectedKey = null; redraw();
       try {
         if (!litterClient?.listLitters || !breedingClient?.listBreedings) throw new Error("Cloud clients unavailable");
         const loaded = await Promise.all([litterClient.listLitters({ fetchImpl, rabbitryId }), breedingClient.listBreedings({ fetchImpl, rabbitryId }),
           rabbitClient?.listRabbits ? rabbitClient.listRabbits({ fetchImpl, rabbitryId }) : Promise.resolve([])]);
         if (version !== requestVersion || source !== "cloud") return;
-        litters = loaded[0].map(clone); breedings = loaded[1].map(clone); rabbits = loaded[2].map(clone); status = "ready";
+        claims = new Set(loaded[0].claimedBreedingTypedIds);
+        litters = loaded[0].litters.map(clone); breedings = loaded[1].map(clone); rabbits = loaded[2].map(clone); status = "ready";
       } catch (error) { if (version !== requestVersion || source !== "cloud") return; status = "error"; message = litterClient?.requestMessage?.(error) || "Cloud litters could not be loaded."; }
       redraw();
     }
@@ -77,10 +80,14 @@
     function upsert(entry) { const key = identityKey(entry, rabbitryId); const i = litters.findIndex(x => identityKey(x, rabbitryId) === key); if (i < 0) litters.push(clone(entry)); else litters[i] = clone(entry); selectedKey = key; return selected(); }
     function createCloud(breedingTypedId, record) {
       if (source !== "cloud" || !litterClient?.createLitter) return Promise.reject(new Error("Cloud litter creation is unavailable"));
-      if (!eligibleBreedings(breedings, litters).some(x => x.metadata.typedId === breedingTypedId)) return Promise.reject(new Error("Select an eligible breeding without a live litter"));
+      if (!eligibleBreedings(breedings, claims).some(x => x.metadata.typedId === breedingTypedId)) return Promise.reject(new Error("Select an eligible breeding that has never been claimed"));
       if (createPromise) return createPromise; const version = requestVersion;
       createPromise = litterClient.createLitter({ fetchImpl, rabbitryId, breedingTypedId, record }).then(entry => {
-        if (version === requestVersion && source === "cloud") return upsert(entry); return entry;
+        if (version === requestVersion && source === "cloud") {
+          claims.add(breedingTypedId);
+          return upsert(entry);
+        }
+        return entry;
       }).finally(() => { createPromise = null; }); return createPromise;
     }
     function updateCloud(entry, record) {
@@ -131,7 +138,7 @@
     form.append(node("h3", editing ? "Edit cloud litter" : "Create cloud litter"));
     let breedingSelect;
     if (!editing) { const label = node("label", "Eligible kindled breeding"); breedingSelect = node("select"); breedingSelect.name = "Breeding";
-      const eligible = eligibleBreedings(state.breedings, state.litters); for (const b of eligible) { const option = node("option", breedingLabel(b, state.rabbits)); option.value = b.metadata.typedId; breedingSelect.append(option); }
+      const eligible = state.eligible; for (const b of eligible) { const option = node("option", breedingLabel(b, state.rabbits)); option.value = b.metadata.typedId; breedingSelect.append(option); }
       if (!eligible.length) breedingSelect.append(Object.assign(node("option", "No eligible kindled breedings"), { value: "" })); label.append(breedingSelect); form.append(label);
     } else { const r = entry.record; form.append(node("p", `Breeding ${value(r, "Bred")} · Doe: ${value(r, "Dam")} · Buck: ${value(r, "Sire")}`, "muted")); }
     const r = entry?.record || {}; field(form, "Litter name", "Name", r.Name); field(form, "Birth date", "Born", r.Born, "date"); field(form, "Breed", "Breed", r.Breed);
@@ -165,6 +172,10 @@
     const add = node("button", "+ Add from breeding", "primary");
     add.type = "button";
     add.disabled = Boolean(state.addUnavailableMessage);
+    if (add.disabled) {
+      add.style.opacity = "0.55";
+      add.style.cursor = "not-allowed";
+    }
     add.onclick = () => { viewMode = "create"; window.render(); };
     view.append(add);
     if (state.addUnavailableMessage) view.append(node("p", state.addUnavailableMessage, "muted"));

@@ -163,6 +163,11 @@ test("litter deletion tombstones history and live linked kits protect deletion w
   f.database.prepare("UPDATE kit_record_versions SET deleted_at = ?").run(now);
   const deleted = await json(await deleteLitter({ request: request(), env: f.env }), 200);
   assert.equal(deleted.litter.envelope.revision, 1);
+  const list = await json(await readLitters({ request: new Request(
+    `${origin}/api/test-versioned-litters?rabbitryId=woods`,
+    { headers: { "Cf-Access-Jwt-Assertion": f.accessToken } }), env: f.env }), 200);
+  assert.deepEqual(list.litters, []);
+  assert.deepEqual(list.claimedBreedingTypedIds, [BREEDING]);
   assert.equal(f.database.prepare("SELECT COUNT(*) count FROM breeding_litter_links").get().count, 1,
     "historical breeding claim remains after tombstone");
 });

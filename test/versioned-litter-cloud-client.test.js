@@ -9,8 +9,8 @@ function payload(id = "l-1", revision = 0) { return { typedId: `s:${JSON.stringi
   createdAt: "2026-11-23T00:00:00.000Z", updatedAt: "2026-11-23T00:00:00.000Z", record: { _id: id, breedingTypedId: 's:"b-1"', damTypedId: 's:"d-1"', sireTypedId: 's:"s-1"',
     Dam: "Doe", Sire: "Buck", Bred: "2026-10-01", Born: "2026-11-01", "Total Kits": "5", unknown: { kept: true } } }, projections: {} }; }
 test("lists and validates live versioned litters", async () => { const client = await load(); let call;
-  const result = await client.listLitters({ fetchImpl: async (...args) => { call = args; return { ok: true, json: async () => ({ rabbitryId: "dev-auth-test", litters: [payload()] }) }; } });
-  assert.equal(result[0].metadata.revision, 0); assert.deepEqual(result[0].record.unknown, { kept: true }); assert.match(call[0], /test-versioned-litters/); assert.equal(call[1].credentials, "same-origin"); });
+  const result = await client.listLitters({ fetchImpl: async (...args) => { call = args; return { ok: true, json: async () => ({ rabbitryId: "dev-auth-test", litters: [payload()], claimedBreedingTypedIds: ['s:"historical"'] }) }; } });
+  assert.equal(result.litters[0].metadata.revision, 0); assert.deepEqual(result.litters[0].record.unknown, { kept: true }); assert.match(call[0], /test-versioned-litters/); assert.equal(call[1].credentials, "same-origin"); });
 test("loads canonical litter detail", async () => { const client = await load(); let url;
   const result = await client.getLitter({ typedId: 's:"l-1"', fetchImpl: async value => { url = value; return { ok: true, json: async () => ({ rabbitryId: "dev-auth-test", litter: payload() }) }; } });
   assert.equal(result.record._id, "l-1"); assert.match(url, /typedId=s%3A%22l-1%22/);
