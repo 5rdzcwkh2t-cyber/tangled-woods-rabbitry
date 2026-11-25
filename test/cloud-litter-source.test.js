@@ -36,3 +36,27 @@ test("soft-delete removes only the selected cloud litter", async () => { const f
   const { helpers } = await load(); const controller = helpers.createController({ fetchImpl: async () => {}, litterClient, breedingClient: { listBreedings: async () => [] } }); await controller.selectCloud(); controller.selectRecord(first); await controller.deleteCloud(first); assert.equal(calls, 1); assert.deepEqual(controller.getState().litters.map(x => x.record._id), ["two"]); });
 test("cloud adapter contains no local persistence or financial features", async () => { const { source } = await load(); assert.doesNotMatch(source, /localStorage|indexedDB|payment|reservation|financial/i); assert.doesNotMatch(source, /\bsave\s*\(/); });
 test("breeding planner no longer claims cloud litter creation is disabled", async () => { const source = await readFile(new URL("../cloud-breeding-source.js", import.meta.url), "utf8"); assert.doesNotMatch(source, /Cloud litter creation is not enabled/); });
+test("count and add availability reflect successful writes without reloading", async () => {
+  const { helpers } = await load();
+  let loads = 0;
+  const first = litter("l-1");
+  const second = litter("l-2", 0, { breedingTypedId: 's:"b-2"' });
+  const controller = helpers.createController({
+    litterClient: {
+      listLitters: async () => { loads += 1; return [first]; },
+      createLitter: async () => second,
+      deleteLitter: async () => ({})
+    },
+    breedingClient: { listBreedings: async () => [breeding("b-1"), breeding("b-2")] }
+  });
+  await controller.selectCloud();
+  assert.equal(controller.getState().message, "1 development cloud litter.");
+  assert.equal(controller.getState().addUnavailableMessage, "");
+  await controller.createCloud('s:"b-2"', second.record);
+  assert.equal(controller.getState().message, "2 development cloud litters.");
+  assert.equal(controller.getState().addUnavailableMessage,
+    "No eligible breedings are available. All completed breedings already have litters, or no breedings are marked Kindled.");
+  await controller.deleteCloud(second);
+  assert.equal(controller.getState().message, "1 development cloud litter.");
+  assert.equal(loads, 1);
+});

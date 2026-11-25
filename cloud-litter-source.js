@@ -1,6 +1,7 @@
 (function () {
   "use strict";
   const PREVIEW_PROJECT = "tangled-woods-rabbitry.pages.dev";
+  const NO_ELIGIBLE_BREEDINGS = "No eligible breedings are available. All completed breedings already have litters, or no breedings are marked Kindled.";
   const clone = value => typeof structuredClone === "function" ? structuredClone(value) : JSON.parse(JSON.stringify(value));
   const isObject = value => value !== null && typeof value === "object" && !Array.isArray(value);
   function isDevelopmentPreviewHost(hostname) {
@@ -39,7 +40,15 @@
     let source = "local", status = "idle", message = "", litters = [], breedings = [], rabbits = [], selectedKey = null;
     let requestVersion = 0, createPromise = null, updatePromise = null, deletePromise = null;
     const selected = () => litters.find(entry => identityKey(entry, rabbitryId) === selectedKey) || null;
-    const snapshot = () => ({ source, status, message, rabbitryId, litters: litters.slice(), breedings: breedings.slice(), rabbits: rabbits.slice(), selected: selected() });
+    const snapshot = () => ({
+      source, status, rabbitryId, litters: litters.slice(), breedings: breedings.slice(),
+      rabbits: rabbits.slice(), selected: selected(),
+      message: status === "ready"
+        ? `${litters.length} development cloud litter${litters.length === 1 ? "" : "s"}.`
+        : message,
+      addUnavailableMessage: status === "ready" && !eligibleBreedings(breedings, litters).length
+        ? NO_ELIGIBLE_BREEDINGS : ""
+    });
     const redraw = () => { if (typeof render === "function") render(snapshot()); };
     function reset() { requestVersion += 1; source = "local"; status = "idle"; message = ""; litters = []; breedings = []; rabbits = []; selectedKey = null; }
     function selectLocal() { reset(); redraw(); }
@@ -52,7 +61,6 @@
           rabbitClient?.listRabbits ? rabbitClient.listRabbits({ fetchImpl, rabbitryId }) : Promise.resolve([])]);
         if (version !== requestVersion || source !== "cloud") return;
         litters = loaded[0].map(clone); breedings = loaded[1].map(clone); rabbits = loaded[2].map(clone); status = "ready";
-        message = `${litters.length} development cloud litter${litters.length === 1 ? "" : "s"}.`;
       } catch (error) { if (version !== requestVersion || source !== "cloud") return; status = "error"; message = litterClient?.requestMessage?.(error) || "Cloud litters could not be loaded."; }
       redraw();
     }
@@ -154,7 +162,12 @@
       for (const [label, key] of [["Birth date", "Born"], ["Breed", "Breed"], ["Total kits", "Total Kits"], ["Sold kits", "Sold Kits"], ["Died kits", "Died Kits"], ["Doe", "Dam"], ["Buck", "Sire"], ["Breeding date", "Bred"], ["Notes", "Notes"]]) card.append(node("p", `${label}: ${value(r, key)}`));
       card.append(node("p", `Revision ${e.metadata.revision} · ${e.metadata.typedId}`, "muted")); const edit = node("button", "Edit", "primary"), del = node("button", "Delete"), back = node("button", "Back");
       edit.onclick = () => { viewMode = "edit"; window.render(); }; del.onclick = () => { viewMode = "confirm-delete"; window.render(); }; back.onclick = () => { controller.clearSelection(); viewMode = "list"; window.render(); }; card.append(edit, del, back); return view.append(card); }
-    const add = node("button", "+ Add from breeding", "primary"); add.type = "button"; add.disabled = eligibleBreedings(state.breedings, state.litters).length === 0; add.onclick = () => { viewMode = "create"; window.render(); }; view.append(add);
+    const add = node("button", "+ Add from breeding", "primary");
+    add.type = "button";
+    add.disabled = Boolean(state.addUnavailableMessage);
+    add.onclick = () => { viewMode = "create"; window.render(); };
+    view.append(add);
+    if (state.addUnavailableMessage) view.append(node("p", state.addUnavailableMessage, "muted"));
     if (!state.litters.length) return view.append(node("p", "No live development cloud litters.", "muted"));
     const list = node("div", undefined, "tw-litter-list"); for (const entry of state.litters) { const button = node("button", summary(entry), "card"); button.type = "button"; button.onclick = async () => { button.disabled = true; try { await controller.loadDetail(entry); viewMode = "detail"; window.render(); } catch (error) { status.textContent = window.twVersionedLitterClient.requestMessage?.(error) || error.message; button.disabled = false; } }; list.append(button); } view.append(list);
   }
