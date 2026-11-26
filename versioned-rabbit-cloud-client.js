@@ -119,14 +119,25 @@
     return `r-cloud-${crypto.randomUUID()}`;
   }
 
-  async function createRabbit({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, record } = {}) {
+  function createRabbit(options) {
+    return createRecord(options);
+  }
+
+  function createKit(options) {
+    if (typeof options?.litterTypedId !== "string" || !options.litterTypedId) {
+      return Promise.reject(new TypeError("litterTypedId is required"));
+    }
+    return createRecord(options, options.litterTypedId);
+  }
+
+  async function createRecord({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, record } = {}, litterTypedId) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");
     if (typeof rabbitryId !== "string" || !rabbitryId.trim()) throw new TypeError("rabbitryId is required");
     if (!isObject(record) || !Object.hasOwn(record, "_id")) throw new TypeError("record is required");
 
     let response;
     try {
-      response = await fetchImpl(CREATE_API, {
+      response = await fetchImpl(litterTypedId ? "/api/test-create-versioned-kit" : CREATE_API, {
         method: "POST",
         credentials: "same-origin",
         cache: "no-store",
@@ -134,7 +145,7 @@
           Accept: "application/json",
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ rabbitryId, record: clone(record) })
+        body: JSON.stringify({ rabbitryId, ...(litterTypedId ? { litterTypedId } : {}), record: clone(record) })
       });
     } catch (cause) {
       throw new CloudRabbitError("Network request failed", { category: "network", offline: true, cause });
@@ -152,14 +163,15 @@
     if (!response.ok) {
       throw new CloudRabbitError("Cloud rabbit request failed", {
         status: response.status,
-        category: "http"
+        category: response.status === 400 ? "validation" : "http"
       });
     }
     if (!isObject(body) || body.created !== true || body.rabbitryId !== rabbitryId) {
       throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
     }
     const created = validateItem(body.rabbit, rabbitryId);
-    if (!Object.is(created.record._id, record._id) || created.metadata.revision !== 0) {
+    if (!Object.is(created.record._id, record._id) || created.metadata.revision !== 0 ||
+        (litterTypedId && created.record.litterTypedId !== litterTypedId)) {
       throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
     }
     return created;
@@ -251,6 +263,7 @@
     listRabbits,
     createRabbitId,
     createRabbit,
+    createKit,
     updateRabbit,
     deleteRabbit,
     requestMessage

@@ -270,3 +270,19 @@ test("client source allows only versioned GET and create/update POST operations"
   assert.match(source, /test-update-versioned-rabbit/);
   assert.match(source, /test-delete-versioned-rabbit/);
 });
+test("creates a kit through the dedicated endpoint and verifies its returned litter", async () => {
+  const { client } = await loadClient();
+  const litterTypedId = 's:"litter-1"';
+  const record = { _id: "kit-1", Name: "Kit", Sex: "Unknown" };
+  const kit = item(record._id);
+  Object.assign(kit.envelope.record, record, { litterTypedId, Breed: "Rex", DoB: "2026-11-25" });
+  const fetchImpl = async (url, options) => {
+    assert.equal(url, "/api/test-create-versioned-kit");
+    assert.deepEqual(JSON.parse(options.body), { rabbitryId: "dev-auth-test", litterTypedId, record });
+    return response({ created: true, rabbitryId: "dev-auth-test", rabbit: kit }, 201);
+  };
+  const created = await client.createKit({ fetchImpl, litterTypedId, record });
+  assert.equal(created.record.Breed, "Rex");
+  kit.envelope.record.litterTypedId = 's:"other"';
+  await assert.rejects(client.createKit({ fetchImpl, litterTypedId, record }), /Invalid cloud rabbit response/);
+});

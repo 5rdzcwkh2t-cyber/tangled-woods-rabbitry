@@ -67,3 +67,37 @@ test("count and add availability reflect successful writes without reloading", a
   assert.equal(controller.getState().litters.length, 1);
   assert.equal(controller.getState().eligible.length, 0);
 });
+test("cloud kit creation deduplicates requests and updates only the linked litter count", async () => {
+  const { helpers } = await load();
+  const parentLitter = litter("l-1");
+  parentLitter.record["Total Kits"] = "5";
+  let resolveKit;
+  let calls = 0;
+  const controller = helpers.createController({
+    litterClient: { listLitters: async () => listing([parentLitter]) },
+    breedingClient: { listBreedings: async () => [] },
+    rabbitClient: {
+      listRabbits: async () => [{ record: { litterTypedId: 's:"other"' }, metadata: { typedId: 's:"other-kit"' } }],
+      createKit: ({ litterTypedId, record }) => {
+        calls += 1;
+        assert.equal(litterTypedId, parentLitter.metadata.typedId);
+        assert.equal(record.Sex, "Unknown");
+        return new Promise(resolve => { resolveKit = resolve; });
+      }
+    }
+  });
+  const record = { _id: "kit-1", Name: "Kit", Sex: "Unknown" };
+  await assert.rejects(controller.createKit(parentLitter, record), /selection changed/);
+  await controller.selectCloud();
+  controller.selectRecord(parentLitter);
+  const pending = controller.createKit(parentLitter, record);
+  assert.equal(controller.createKit(parentLitter, record), pending);
+  resolveKit({ record: { ...record, litterTypedId: parentLitter.metadata.typedId }, metadata: { typedId: 's:"kit-1"' } });
+  await pending;
+  assert.equal(calls, 1);
+  assert.equal(helpers.kitsForLitter(controller.getState().rabbits, parentLitter.metadata.typedId).length, 1);
+  assert.equal(controller.getState().selected.record["Total Kits"], "5");
+  await controller.selectCloud();
+  assert.equal(helpers.kitsForLitter(controller.getState().rabbits, parentLitter.metadata.typedId).length, 0);
+  assert.equal(controller.getState().litters[0].record["Total Kits"], "5");
+});

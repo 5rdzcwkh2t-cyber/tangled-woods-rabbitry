@@ -18,6 +18,9 @@
     return breedings.filter(entry => isObject(entry?.record) && typeof entry?.metadata?.typedId === "string" &&
       entry.record.status === "Kindled" && !linked.has(entry.metadata.typedId));
   }
+  function kitsForLitter(rabbits, litterTypedId) {
+    return rabbits.filter(entry => entry.record.litterTypedId === litterTypedId);
+  }
   function applyLitterFields(base, values) {
     const record = clone(base);
     for (const [key, value] of Object.entries(values)) {
@@ -40,6 +43,7 @@
     let source = "local", status = "idle", message = "", litters = [], breedings = [], rabbits = [], selectedKey = null;
     let claims = new Set();
     let requestVersion = 0, createPromise = null, updatePromise = null, deletePromise = null;
+    let pendingKit = null;
     const selected = () => litters.find(entry => identityKey(entry, rabbitryId) === selectedKey) || null;
     const snapshot = () => ({
       source, status, rabbitryId, litters: litters.slice(), breedings: breedings.slice(),
@@ -109,9 +113,28 @@
         return result;
       }).finally(() => { deletePromise = null; }); return deletePromise;
     }
-    return { getState: snapshot, initialize, reset, selectLocal, selectCloud, selectRecord, loadDetail, clearSelection, createCloud, updateCloud, deleteCloud };
+    function createKit(litter, record) {
+      const litterTypedId = litter.metadata.typedId;
+      if (source !== "cloud" || status !== "ready" || selected()?.metadata.typedId !== litterTypedId) {
+        return Promise.reject(new Error("Cloud litter selection changed"));
+      }
+      if (pendingKit) {
+        if (pendingKit.litterTypedId === litterTypedId && pendingKit.id === record._id) return pendingKit.promise;
+        return Promise.reject(new Error("A kit is already being saved"));
+      }
+      const version = requestVersion;
+      const promise = rabbitClient.createKit({ fetchImpl, rabbitryId, litterTypedId, record }).then(kit => {
+        if (version === requestVersion && source === "cloud") {
+          rabbits = [...rabbits.filter(entry => entry.metadata.typedId !== kit.metadata.typedId), kit];
+        }
+        return kit;
+      }).finally(() => { pendingKit = null; });
+      pendingKit = { litterTypedId, id: record._id, promise };
+      return promise;
+    }
+    return { getState: snapshot, initialize, reset, selectLocal, selectCloud, selectRecord, loadDetail, clearSelection, createCloud, updateCloud, deleteCloud, createKit };
   }
-  window.twCloudLitterSource = { applyLitterFields, breedingLabel, createController, eligibleBreedings, isDevelopmentPreviewHost };
+  window.twCloudLitterSource = { applyLitterFields, breedingLabel, createController, eligibleBreedings, kitsForLitter, isDevelopmentPreviewHost };
   if (typeof window.render !== "function" || typeof window.nav !== "function" || !window.document) return;
   const priorRender = window.render, priorNav = window.nav;
   const controller = createController({ fetchImpl: (...args) => fetch(...args), render: () => window.render() });
@@ -153,6 +176,57 @@
       } catch (error) { feedback.textContent = window.twVersionedLitterClient.requestMessage?.(error) || error.message; saveButton.disabled = false; }
     }; view.append(form);
   }
+  function renderKits(view, state, litter) {
+    const section = node("section", undefined, "card");
+    const kits = kitsForLitter(state.rabbits, litter.metadata.typedId);
+    const total = litter.record["Total Kits"];
+    section.append(node("h3", "Kits"), node("p", total == null
+      ? `${kits.length} individual kits · litter total not recorded`
+      : `${kits.length} individual kits / ${total} recorded`, "muted"));
+    const list = node("div", undefined, "tw-litter-list");
+    for (const kit of kits) {
+      const label = [kit.record.Name || "Unnamed kit", kit.record.Sex || "Unknown",
+        kit.record.Archived ? "Archived" : ""].filter(Boolean).join(" · ");
+      const button = node("button", label, "card");
+      button.type = "button";
+      button.onclick = () => window.twCloudRabbitSource.openProfile(kit.metadata.typedId);
+      list.append(button);
+    }
+    section.append(list);
+    const form = node("form", undefined, "tw-litter-form");
+    const name = field(form, "Kit name", "Name");
+    name.required = true;
+    const sexLabel = node("label", "Sex");
+    const sex = node("select");
+    for (const label of ["Unknown", "Doe", "Buck"]) sex.append(Object.assign(node("option", label), { value: label }));
+    sexLabel.append(sex);
+    const save = node("button", "+ Add kit", "primary");
+    save.type = "submit";
+    const feedback = node("p", "", "muted");
+    feedback.setAttribute("role", "status");
+    form.append(sexLabel, save, feedback);
+    let id;
+    form.onsubmit = async event => {
+      event.preventDefault();
+      if (save.disabled) return;
+      if (!name.value.trim()) { feedback.textContent = "Enter a kit name."; return; }
+      save.disabled = true;
+      feedback.textContent = "Saving kit…";
+      try {
+        id ??= window.twVersionedRabbitClient.createRabbitId();
+        await controller.createKit(litter, { _id: id, Name: name.value.trim(), Sex: sex.value });
+        if (form.isConnected) window.render();
+      } catch (error) {
+        feedback.textContent = error.status === 409
+          ? "The kit may already exist, or its litter or parents changed. Reload cloud litters before trying again."
+          : error.status === 404 ? "This cloud litter is no longer available."
+            : window.twVersionedRabbitClient.requestMessage(error);
+        save.disabled = error.status === 409;
+      }
+    };
+    section.append(form);
+    view.append(section);
+  }
   function renderCloud(state) {
     const view = document.getElementById("view"); if (!view) return; view.replaceChildren();
     const top = node("div", undefined, "row"); top.append(node("h2", "Litters"), controls(state)); view.append(top);
@@ -168,7 +242,12 @@
     if (viewMode === "detail") { const e = state.selected, r = e.record, card = node("div", undefined, "card"); card.append(node("h3", value(r, "Name")));
       for (const [label, key] of [["Birth date", "Born"], ["Breed", "Breed"], ["Total kits", "Total Kits"], ["Sold kits", "Sold Kits"], ["Died kits", "Died Kits"], ["Doe", "Dam"], ["Buck", "Sire"], ["Breeding date", "Bred"], ["Notes", "Notes"]]) card.append(node("p", `${label}: ${value(r, key)}`));
       card.append(node("p", `Revision ${e.metadata.revision} · ${e.metadata.typedId}`, "muted")); const edit = node("button", "Edit", "primary"), del = node("button", "Delete"), back = node("button", "Back");
-      edit.onclick = () => { viewMode = "edit"; window.render(); }; del.onclick = () => { viewMode = "confirm-delete"; window.render(); }; back.onclick = () => { controller.clearSelection(); viewMode = "list"; window.render(); }; card.append(edit, del, back); return view.append(card); }
+      edit.onclick = () => { viewMode = "edit"; window.render(); }; del.onclick = () => { viewMode = "confirm-delete"; window.render(); }; back.onclick = () => { controller.clearSelection(); viewMode = "list"; window.render(); };
+      card.append(edit, del, back);
+      view.append(card);
+      renderKits(view, state, e);
+      return;
+    }
     const add = node("button", "+ Add from breeding", "primary");
     add.type = "button";
     add.disabled = Boolean(state.addUnavailableMessage);

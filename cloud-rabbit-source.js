@@ -237,6 +237,7 @@
         message = requestMessage(error);
       }
       redraw();
+      return version === requestVersion && status === "ready";
     }
 
     function createCloud(record) {
@@ -707,6 +708,7 @@
       const input = document.createElement(field === "Notes" || field === "Bio" ? "textarea" : "input");
       input.name = field;
       input.value = draft[field] || "";
+      if (draft.litterTypedId && (field === "Father" || field === "Mother")) input.readOnly = true;
       input.oninput = () => { draft[field] = input.value; };
       label.append(input);
       form.append(label);
@@ -1062,6 +1064,21 @@
       resetCloudView();
     }
     return priorNav.apply(this, arguments);
+  };
+
+  window.twCloudRabbitSource.openProfile = async function (typedId) {
+    if (window.twIsCloudTestMode?.()) return false;
+    previewInitialized = true;
+    resetCloudView();
+    window.nav("Rabbits");
+    if (!await controller.selectCloud() || page !== "Rabbits") return false;
+    const state = controller.getState();
+    const entry = state.records.find(record => record.metadata.typedId === typedId);
+    if (state.source !== "cloud" || !entry) return false;
+    controller.selectRecord(entry);
+    move("select");
+    window.render();
+    return true;
   };
 
   if (page === "Rabbits") window.render();
