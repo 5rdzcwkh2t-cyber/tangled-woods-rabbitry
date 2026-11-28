@@ -1,0 +1,372 @@
+import assert from "node:assert/strict";
+import { readFile } from "node:fs/promises";
+import test from "node:test";
+import vm from "node:vm";
+
+const source = await readFile(new URL("../cloud-rabbit-photo-gallery.js", import.meta.url), "utf8");
+const origin = "https://preview.test";
+const scope = { rabbitryId: "dev-auth-test", typedId: 's:"Rabbit / 7"' };
+const id = index => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
+const jpeg = new Blob(["normalized fixture"], { type: "image/jpeg" });
+const gallery = (ids = [], primaryId = ids[0] ?? null) => ({ primaryId, photos: ids.map(id => ({ id })) });
+const result = (revision, ids = [], primaryId) => ({ revision, gallery: gallery(ids, primaryId) });
+const failure = (status, category = "http") => Object.assign(new Error(category), { status, category });
+
+function load(extra = {}) {
+  const context = { window: {}, URL, URLSearchParams, location: { origin }, ...extra };
+  vm.runInNewContext(source, context);
+  return context.window.twCloudRabbitPhotos;
+}
+
+test("cloud card photos use only qualified cloud metadata and scoped same-origin URLs", () => {
+  const { primaryPhotoUrl } = load();
+  const record = { cloudPhotoGalleryV1: gallery([id(1)]), localPhoto: "data:image/jpeg;base64,..." };
+  const local = { record, metadata: { ...scope, source: { kind: "local" } } };
+  assert.equal(primaryPhotoUrl(local), null);
+  const entry = { ...local, metadata: { ...scope, source: { kind: "versioned-cloud" } } };
+  const parsed = new URL(primaryPhotoUrl(entry), origin);
+  assert.equal(parsed.pathname, "/api/test-rabbit-photos");
+  assert.deepEqual(Object.fromEntries(parsed.searchParams), { ...scope, photoId: id(1) });
+  assert.equal(primaryPhotoUrl({ ...entry, record: { cloudPhotoGalleryV1: gallery([id(1)], id(2)) } }), null);
+});
+
+test("photo client uses uncached credentialed reads and sends JPEG bytes with progress and revision", async () => {
+  const { createApi } = load();
+  const calls = [];
+  const api = createApi(scope, {
+    fetchImpl: async (url, init) => {
+      calls.push({ url, init });
+      return { status: 200, url: origin + url, text: async () => JSON.stringify(result(4)) };
+    },
+    upload: async (url, body, progress) => {
+      calls.push({ url, body });
+      progress(0.5);
+      return { status: 200, url: origin + url, text: JSON.stringify(result(5, [id(1)])) };
+    }
+  });
+  assert.equal((await api.load()).revision, 4);
+  const progress = [];
+  await api.mutate({ action: "add", operationId: id(1), baseRevision: 4, jpeg }, value => progress.push(value));
+  assert.deepEqual(progress, [0.5]);
+  assert.equal(calls[0].init.cache, "no-store");
+  assert.equal(calls[0].init.credentials, "same-origin");
+  assert.equal(calls[0].init.method, "GET");
+  assert.equal(calls[1].body, jpeg);
+  assert.deepEqual(Object.fromEntries(new URL(calls[1].url, origin).searchParams), {
+    ...scope, action: "add", operationId: id(1), baseRevision: "4"
+  });
+  await api.mutate({ action: "primary", photoId: id(1), baseRevision: 4 });
+  assert.equal(calls[2].init.method, "POST");
+  assert.equal(calls[2].init.body, undefined);
+});
+
+test("photo client treats an Access redirect, stale write, and invalid successful response as failures", async () => {
+  const { createApi } = load();
+  const mock = (status, url, text) => createApi(scope, {
+    fetchImpl: async () => ({ status, url, text: async () => text })
+  });
+  await assert.rejects(mock(200, "https://team.cloudflareaccess.com/login", "").load(),
+    { status: 401, category: "auth" });
+  await assert.rejects(mock(409, origin, "{}").mutate({ action: "remove", photoId: id(1), baseRevision: 4 }),
+    { status: 409 });
+  await assert.rejects(mock(200, origin, JSON.stringify(result(4, [id(1), id(1)]))).load(),
+    { category: "malformed" });
+});
+
+test("compression draws an oriented decoded image onto a fresh 900-pixel JPEG canvas", async () => {
+  const events = [];
+  const bitmap = { width: 1600, height: 2400, close: () => events.push("closed") };
+  const canvas = {
+    getContext: () => ({
+      fillRect: (...args) => events.push(["fill", ...args]),
+      drawImage: (...args) => events.push(["draw", ...args])
+    }),
+    toBlob: (callback, type, quality) => { events.push(["encode", type, quality]); callback(jpeg); }
+  };
+  const { compressPhoto, photoDimensions } = load({
+    createImageBitmap: async (_, options) => { events.push(options.imageOrientation); return bitmap; },
+    document: { createElement: tag => { assert.equal(tag, "canvas"); return canvas; } }
+  });
+  assert.equal(await compressPhoto(jpeg), jpeg);
+  assert.deepEqual([canvas.width, canvas.height], [600, 900]);
+  assert.deepEqual(events, ["from-image", ["fill", 0, 0, 600, 900], ["draw", bitmap, 0, 0, 600, 900],
+    ["encode", "image/jpeg", 0.78], "closed"]);
+  assert.equal(photoDimensions(320, 100).width, 320);
+  assert.throws(() => photoDimensions(10000, 10000), /too large/);
+  await assert.rejects(compressPhoto(new Blob(["abc"], { type: "image/svg+xml" })), { category: "file" });
+});
+
+test("multiple uploads run sequentially and duplicate submission cannot start a second batch", async () => {
+  const { createSession } = load();
+  const calls = [], states = [], sync = [];
+  let release;
+  const hold = new Promise(resolve => { release = resolve; });
+  const session = createSession({
+    load: async () => result(4),
+    mutate: async (operation, progress) => {
+      calls.push(operation);
+      if (calls.length === 1) await hold;
+      progress(0.35);
+      return result(4 + calls.length, calls.map(item => item.operationId));
+    }
+  }, { compress: async () => jpeg, makeId: () => id(calls.length + 1),
+    onChange: state => states.push(state), onSnapshot: state => sync.push(state.revision) });
+  await session.load();
+  const saving = session.uploadFiles(["first", "second"]);
+  assert.equal(await session.uploadFiles(["duplicate"]), false);
+  release();
+  await saving;
+  assert.deepEqual(calls.map(item => item.baseRevision), [4, 5]);
+  assert.equal(session.getState().snapshot.revision, 6);
+  assert.deepEqual(sync, [4, 6]);
+  assert.ok(states.some(state => state.progress === 0.35 && state.busy));
+});
+
+test("ambiguous upload retries reuse exact bytes, operation ID and revision, then refresh on replay", async () => {
+  const { createSession } = load();
+  const calls = [];
+  let compressions = 0, reads = 0;
+  const session = createSession({
+    load: async () => ++reads === 1 ? result(4) : result(5, [id(1)]),
+    mutate: async command => {
+      calls.push(command);
+      if (calls.length === 1) throw failure(0, "network");
+      return { revision: 5, replayed: true };
+    }
+  }, { compress: async () => { compressions++; return jpeg; }, makeId: () => id(1) });
+  await session.load();
+  await session.uploadFiles(["photo"]);
+  assert.equal(session.getState().retry, true);
+  assert.equal(await session.uploadFiles(["different photo"]), false);
+  await session.retry();
+  assert.equal(calls[0], calls[1]);
+  assert.equal(calls[1].jpeg, jpeg);
+  assert.equal(calls[1].baseRevision, 4);
+  assert.equal(compressions, 1);
+  assert.equal(reads, 2);
+  assert.equal(session.getState().retry, false);
+  assert.equal(session.getState().snapshot.gallery.primaryId, id(1));
+});
+
+test("revision conflict stops a partial batch and requires an explicit reload", async () => {
+  const { createSession } = load();
+  const sent = [], synced = [];
+  let reads = 0;
+  const session = createSession({
+    load: async () => ++reads === 1 ? result(4) : result(7, [id(1), id(7)]),
+    mutate: async command => {
+      sent.push(command);
+      if (sent.length === 2) throw failure(409);
+      return result(5, [id(1)]);
+    }
+  }, { compress: async () => jpeg, makeId: () => id(sent.length + 1), onSnapshot: value => synced.push(value.revision) });
+  await session.load();
+  await session.uploadFiles(["one", "two", "three"]);
+  assert.equal(sent.length, 2);
+  assert.match(session.getState().message, /1 saved/);
+  assert.equal(session.getState().reloadRequired, true);
+  assert.equal(await session.retry(), false);
+  assert.equal(await session.uploadFiles(["blocked"]), false);
+  await session.load();
+  assert.deepEqual(synced, [4, 5, 7]);
+  assert.equal(session.getState().reloadRequired, false);
+});
+
+test("a full gallery still permits single replacement, primary changes and removal at the latest revision", async () => {
+  const { createSession } = load();
+  const ids = Array.from({ length: 10 }, (_, i) => id(i + 1));
+  const calls = [];
+  const session = createSession({
+    load: async () => result(12, ids),
+    mutate: async operation => {
+      calls.push(operation);
+      if (operation.action === "replace") ids[0] = operation.operationId;
+      if (operation.action === "remove") ids.shift();
+      return result(operation.baseRevision + 1, ids, operation.action === "primary" ? operation.photoId : ids[0]);
+    }
+  }, { compress: async () => jpeg, makeId: () => id(11) });
+  await session.load();
+  assert.equal(await session.uploadFiles(["over limit"]), false);
+  assert.equal(await session.uploadFiles(["one", "two"], id(1)), false);
+  await session.uploadFiles(["replacement"], id(1));
+  await session.change("primary", id(2));
+  await session.change("remove", id(11));
+  assert.deepEqual(calls.map(item => [item.action, item.photoId, item.baseRevision]),
+    [["replace", id(1), 12], ["primary", id(2), 13], ["remove", id(11), 14]]);
+  assert.equal(session.getState().snapshot.gallery.photos.length, 9);
+});
+
+test("navigating away during compression prevents subsequent upload", async () => {
+  const { createSession } = load();
+  let current = true, uploads = 0, finish;
+  const pending = new Promise(resolve => { finish = resolve; });
+  const session = createSession({ load: async () => result(1), mutate: async () => { uploads++; } },
+    { compress: () => pending, makeId: () => id(1), isCurrent: () => current });
+  await session.load();
+  const attempt = session.uploadFiles(["first", "second"]);
+  current = false;
+  finish(jpeg);
+  await attempt;
+  assert.equal(uploads, 0);
+});
+
+test("mounted gallery exposes separate camera and multi-select inputs and keyboard viewer navigation", async () => {
+  class Element {
+    constructor(tag) {
+      this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {};
+      this.className = ""; this.textContent = ""; this.isConnected = true;
+    }
+    append(...children) { for (const child of children) { child.parent = this; this.children.push(child); } }
+    replaceChildren(...children) { this.children.length = 0; this.append(...children); }
+    setAttribute(name, value) { this.attributes[name] = value; }
+    addEventListener(name, listener) { this.listeners[name] = listener; }
+    focus() { this.focused = true; }
+    showModal() { this.open = true; }
+    close() { this.open = false; this.listeners.close(); }
+    remove() { this.parent.children = this.parent.children.filter(child => child !== this); this.isConnected = false; }
+    descendants() { return this.children.flatMap(child => [child, ...child.descendants()]); }
+    querySelectorAll() {
+      return this.descendants().filter(child => child.tag === "input" ||
+        (child.tag === "button" && child.className !== "tw-cloud-photo-thumb"));
+    }
+  }
+  const { mount } = load({
+    document: { createElement: tag => new Element(tag) },
+    fetch: async url => ({ status: 200, url: origin + url, text: async () => JSON.stringify(result(3, [id(1), id(2)])) })
+  });
+  const panel = new Element("section");
+  mount(panel, { metadata: scope });
+  await new Promise(resolve => setImmediate(resolve));
+  const control = text => panel.descendants().find(item => item.textContent === text);
+  const take = control("Take photo").children[0];
+  const choose = control("Choose photos").children[0];
+  assert.equal(take.attributes.capture, "environment");
+  assert.equal(take.multiple, false);
+  assert.equal(choose.attributes.capture, undefined);
+  assert.equal(choose.multiple, true);
+  assert.equal(control("Replace").children[0].multiple, false);
+  const view = control("View photo 1");
+  view.onclick();
+  const dialog = panel.children.find(child => child.tag === "dialog");
+  assert.equal(dialog.open, true);
+  assert.ok(control("Photo 1 of 2"));
+  dialog.listeners.keydown({ key: "ArrowRight", preventDefault() {} });
+  assert.ok(control("Photo 2 of 2"));
+  control("Close").onclick();
+  assert.equal(dialog.isConnected, false);
+  assert.equal(view.focused, true);
+});
+
+function storageFixture() {
+  const items = new Map();
+  return {
+    get length() { return items.size; },
+    key: index => [...items.keys()][index] ?? null,
+    getItem: key => items.get(key) ?? null,
+    setItem: (key, value) => items.set(key, value),
+    removeItem: key => items.delete(key)
+  };
+}
+
+test("closing during a batch preserves its receipt and reopening confirms the committed photo", async () => {
+  const { createSession, createJournal } = load();
+  const storage = storageFixture();
+  const journal = createJournal(scope, () => storage);
+  const hash = async () => "c".repeat(64);
+  let current = true, finish, started;
+  const dispatched = new Promise(resolve => { started = resolve; });
+  const response = new Promise(resolve => { finish = resolve; });
+  let calls = 0;
+  const original = createSession({
+    load: async () => result(4),
+    mutate: async () => { calls++; started(); return response; }
+  }, { compress: async () => jpeg, makeId: () => id(3), journal, hash, isCurrent: () => current });
+  await original.load();
+  const saving = original.uploadFiles(["first", "second"]);
+  await dispatched;
+  current = false;
+  finish(result(5, [id(3)]));
+  await saving;
+  assert.equal(calls, 1);
+  assert.equal(journal.list()[0].remaining, 1);
+  assert.ok(!storage.getItem(storage.key(0)).includes("normalized fixture"));
+  const reopened = createSession({ load: async () => result(5, [id(3)]) }, {
+    journal: createJournal(scope, () => storage)
+  });
+  await reopened.load();
+  assert.equal(journal.list().length, 0);
+  assert.match(reopened.getState().message, /confirmed in the gallery.*remaining photo/);
+  assert.equal(reopened.getState().snapshot.gallery.photos.length, 1);
+});
+
+test("reopening an unresolved upload blocks new IDs and retries only matching bytes", async () => {
+  const { createSession, createJournal } = load();
+  const storage = storageFixture();
+  const journal = createJournal(scope, () => storage);
+  let sent = [];
+  const hash = async bytes => bytes === jpeg ? "c".repeat(64) : "d".repeat(64);
+  const original = createSession({
+    load: async () => result(4),
+    mutate: async command => { sent.push(command); throw failure(0, "network"); }
+  }, { compress: async () => jpeg, makeId: () => id(4), journal, hash });
+  await original.load();
+  await original.uploadFiles(["original"]);
+  const reopened = createSession({
+    load: async () => result(4),
+    reconcile: async () => { throw failure(404); },
+    mutate: async command => { sent.push(command); return result(5, [id(4)]); }
+  }, { compress: async file => file === "original" ? jpeg : new Blob(["other"]), journal, hash });
+  await reopened.load();
+  await reopened.checkRecovery();
+  assert.equal(journal.list().length, 1, "a missing receipt at the same revision may still arrive");
+  assert.equal(await reopened.uploadFiles(["new photo"]), false);
+  await reopened.recoverFile("wrong photo");
+  assert.match(reopened.getState().message, /does not match/);
+  assert.equal(sent.length, 1);
+  await reopened.recoverFile("original");
+  assert.equal(sent[1].operationId, sent[0].operationId);
+  assert.equal(sent[1].baseRevision, sent[0].baseRevision);
+  assert.equal(sent[1].jpeg, jpeg);
+  assert.equal(journal.list().length, 0);
+});
+
+test("a failed receipt write prevents an upload from being dispatched", async () => {
+  const { createSession, createJournal } = load();
+  const storage = storageFixture();
+  storage.setItem = () => { throw new Error("Storage denied"); };
+  const journal = createJournal(scope, () => storage);
+  let calls = 0;
+  const session = createSession({ load: async () => result(4), mutate: async () => { calls++; } }, {
+    compress: async () => jpeg, makeId: () => id(1), journal, hash: async () => "e".repeat(64)
+  });
+  await session.load();
+  await session.uploadFiles(["photo"]);
+  assert.equal(calls, 0);
+  assert.match(session.getState().message, /No upload was sent/);
+});
+
+test("the image-element decoder revokes temporary object URLs on success and failure", async () => {
+  const events = [];
+  let shouldFail = false;
+  class Image {
+    naturalWidth = 600;
+    naturalHeight = 1200;
+    set src(value) {
+      events.push(value);
+      if (shouldFail) this.onerror();
+      else this.onload();
+    }
+  }
+  const canvas = {
+    getContext: () => ({ fillRect() {}, drawImage() {} }),
+    toBlob: done => done(jpeg)
+  };
+  const { compressPhoto } = load({
+    Image, URL: { createObjectURL: () => "blob:temporary", revokeObjectURL: url => events.push("revoked " + url) },
+    document: { createElement: () => canvas }
+  });
+  await compressPhoto(jpeg);
+  shouldFail = true;
+  await assert.rejects(compressPhoto(jpeg), { category: "file" });
+  assert.deepEqual(events, ["blob:temporary", "revoked blob:temporary", "blob:temporary", "revoked blob:temporary"]);
+});

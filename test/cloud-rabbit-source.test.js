@@ -61,6 +61,37 @@ async function loadController(fetchImpl) {
   };
 }
 
+test("refreshing after a photo revision updates the selected cloud record without crossing source switches", async () => {
+  const original = versionedRabbit("cloud-1", "Original", 2);
+  const updated = versionedRabbit("cloud-1", "Fresh", 3, { cloudPhotoGalleryV1: { primaryId: null, photos: [] } });
+  let delay = false, release;
+  const pending = new Promise(resolve => { release = resolve; });
+  const fetchImpl = async url => {
+    const query = new URL(url, "https://preview.test").searchParams;
+    if (query.has("typedId")) {
+      assert.equal(query.get("typedId"), original.typedId);
+      if (delay) await pending;
+      return { ok: true, json: async () => ({ rabbitryId: "dev-auth-test", rabbit: updated }) };
+    }
+    return { ok: true, json: async () => ({ rabbitryId: "dev-auth-test", rabbits: [original] }) };
+  };
+  const { createController } = await loadController(fetchImpl);
+  const controller = createController({ fetchImpl });
+  await controller.selectCloud();
+  const entry = controller.getState().records[0];
+  controller.selectRecord(entry);
+  const fresh = await controller.refreshCloudEntry(entry);
+  assert.equal(fresh.metadata.revision, 3);
+  assert.equal(controller.getState().selected.record.Name, "Fresh");
+  delay = true;
+  const stale = controller.refreshCloudEntry(fresh);
+  controller.selectLocal();
+  release();
+  assert.equal(await stale, null);
+  assert.equal(controller.getState().source, "local");
+  assert.equal(controller.getState().records.length, 0);
+});
+
 test("dated cloud weight helpers validate values, duplicates, limits, and complete clones", async () => {
   const helpers = await loadController(async () => { throw new Error("unused"); });
   assert.equal(helpers.isValidDate("2024-02-29"), true);

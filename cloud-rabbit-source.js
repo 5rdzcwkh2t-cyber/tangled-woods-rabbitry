@@ -342,13 +342,24 @@
       return management.select(entry?.metadata?.identityKey);
     }
 
+    async function refreshCloudEntry(entry) {
+      if (management.getState().source.key !== cloudSource.key || !client?.getRabbit) return null;
+      const epoch = requestVersion;
+      const { rabbitryId, typedId, identityKey } = entry.metadata;
+      const fresh = await client.getRabbit({ fetchImpl, rabbitryId, typedId });
+      if (epoch !== requestVersion || management.getState().source.key !== cloudSource.key) return null;
+      const current = management.getState().records.find(item => item.metadata.identityKey === identityKey);
+      if (!current) return null;
+      return current.metadata.revision >= fresh.metadata.revision ? current : management.upsert(fresh);
+    }
+
     function clearSelection() {
       management.clearSelection();
     }
 
     return {
       getState: snapshot, reset, initialize, selectLocal, selectCloud,
-      createCloud, updateCloud, deleteCloud, selectRecord, clearSelection
+      createCloud, updateCloud, deleteCloud, selectRecord, clearSelection, refreshCloudEntry
     };
   }
 
@@ -698,7 +709,7 @@
     const edit = node("button", "Edit Weight");
     edit.type = "button";
     edit.onclick = () => {
-      weightDraft = validateWeightHistory(entry.record.weightHistory).map((measurement) => ({
+      weightDraft = validateWeightHistory(controller.getState().selected.record.weightHistory).map((measurement) => ({
         entry: measurement,
         date: measurement.date,
         pounds: String(Math.floor(measurement.ounces / 16)),
@@ -735,7 +746,7 @@
     const edit = node("button", "Edit Milestones");
     edit.type = "button";
     edit.onclick = () => {
-      milestoneDraft = validateMilestones(entry.record.kitMilestones);
+      milestoneDraft = validateMilestones(controller.getState().selected.record.kitMilestones);
       move("milestones");
       window.render();
     };
@@ -750,7 +761,7 @@
     back.onclick = () => { controller.clearSelection(); move("back"); window.render(); };
     const heading = node("h2", rabbitLabel(rabbit));
     const notice = node("p", "Development cloud rabbit.", "tw-cloud-app-banner");
-    notice.textContent = "Editing or soft deletion creates a new cloud revision. Photographs remain local.";
+    notice.textContent = "Editing, changing photographs, or soft deletion creates a new cloud revision.";
     const card = node("div", undefined, "card");
     if (state.message) {
       const status = node("p", state.message, "muted");
@@ -767,7 +778,7 @@
     edit.type = "button";
     styleCloudActionButton(edit);
     edit.onclick = () => {
-      editDraft = structuredClone(entry.record);
+      editDraft = structuredClone(controller.getState().selected.record);
       move("edit");
       window.render();
     };
@@ -775,15 +786,20 @@
     archive.type = "button";
     styleCloudActionButton(archive);
     const archiveStatus = node("p", "", "muted");
+    let galleryBusy = false;
+    let archiveBusy = false;
+    let profileNeedsReload = false;
     archiveStatus.setAttribute("role", "status");
     archive.onclick = async () => {
       if (archive.disabled) return;
-      const context = operationContext(state, entry.metadata.identityKey);
-      archive.disabled = true;
-      edit.disabled = true;
-      archiveStatus.textContent = isArchivedRabbit(rabbit) ? "Unarchiving cloud rabbit..." : "Archiving cloud rabbit...";
+      const current = controller.getState().selected;
+      const context = operationContext(state, current.metadata.identityKey);
+      const archived = isArchivedRabbit(current.record);
+      archiveBusy = true;
+      syncProfileButtons();
+      archiveStatus.textContent = archived ? "Unarchiving cloud rabbit..." : "Archiving cloud rabbit...";
       try {
-        const updated = await controller.updateCloud(entry, createArchiveRevision(rabbit, !isArchivedRabbit(rabbit)));
+        const updated = await controller.updateCloud(current, createArchiveRevision(current.record, !archived));
         if (contextIsCurrent(context, true)) {
           controller.selectRecord(updated);
           archiveStatus.textContent = isArchivedRabbit(updated.record)
@@ -794,9 +810,10 @@
       } catch (error) {
         if (contextIsCurrent(context, true)) {
           archiveStatus.textContent = requestMessage(error);
-          archive.disabled = false;
-          edit.disabled = false;
         }
+      } finally {
+        archiveBusy = false;
+        syncProfileButtons();
       }
     };
     const remove = node("button", "Delete rabbit");
@@ -819,7 +836,34 @@
       card.append(line);
     }
     if (!card.childNodes.length) card.append(node("p", "No additional rabbit details are available.", "muted"));
-    view.append(sourceControls(state), back, heading, notice, card, renderCloudWeightCard(entry), renderCloudMilestoneCard(entry));
+    const gallery = node("section");
+    const weight = renderCloudWeightCard(entry);
+    const milestones = renderCloudMilestoneCard(entry);
+    const profileButtons = [edit, archive, remove, ...weight.querySelectorAll("button"), ...milestones.querySelectorAll("button")];
+    function syncProfileButtons() {
+      for (const button of profileButtons) button.disabled = galleryBusy || archiveBusy || profileNeedsReload;
+    }
+    view.append(sourceControls(state), back, heading, notice, card, gallery, weight, milestones);
+    window.twCloudRabbitPhotos?.mount(gallery, entry, {
+      onBusy: busy => { galleryBusy = busy; syncProfileButtons(); },
+      onSnapshot: async snapshot => {
+        const currentState = controller.getState();
+        const current = currentState.records.find(item => item.metadata.identityKey === entry.metadata.identityKey);
+        if (currentState.source !== "cloud" || !current) return;
+        profileNeedsReload = current.metadata.revision < snapshot.revision;
+        if (!profileNeedsReload) return;
+        const fresh = await controller.refreshCloudEntry(current);
+        if (!fresh) return;
+        if (fresh.metadata.revision < snapshot.revision) throw new Error("Cloud rabbit revision is not yet available");
+        profileNeedsReload = false;
+        if (gallery.isConnected) {
+          revision.textContent = `Cloud revision ${fresh.metadata.revision}`;
+          archive.textContent = isArchivedRabbit(fresh.record) ? "Unarchive rabbit" : "Archive rabbit";
+        } else if (viewMode === "list" && controller.getState().source === "cloud") {
+          renderCloudListResults(view, controller.getState());
+        }
+      }
+    });
   }
 
   function renderCloudDeleteConfirmation(view, state, entry) {
@@ -1124,10 +1168,10 @@
   function renderCloudList(view, state) {
     view.append(sourceControls(state));
     const heading = node("h2", "Rabbits");
-    const notice = node("p", "This temporary view cannot change cloud or local records. Cloud photographs are not available.", "tw-cloud-app-banner");
+    const notice = node("p", "", "tw-cloud-app-banner");
     const badge = node("span", "Development cloud", "muted");
     badge.setAttribute("aria-label", "Rabbit source: Development cloud");
-    notice.textContent = "Versioned cloud rabbits are isolated from local and legacy cloud records. Photographs remain local.";
+    notice.textContent = "Versioned cloud rabbits and photos are isolated from local and legacy cloud records.";
     const status = node("p", state.message, "muted");
     status.setAttribute("role", "status");
     view.append(heading, badge, notice, status);
@@ -1214,6 +1258,15 @@
       button.type = "button";
       const title = node("strong", rabbitLabel(rabbit));
       const summary = node("span", [rabbit.Sex, rabbit.Breed, rabbit.Tattoo].filter(Boolean).join(" · "), "muted");
+      const primary = window.twCloudRabbitPhotos?.primaryPhotoUrl(entry);
+      if (primary) {
+        const image = node("img", undefined, "tw-cloud-photo-card-image");
+        image.alt = "";
+        image.loading = "lazy";
+        image.onerror = () => image.remove();
+        image.src = primary;
+        button.append(image);
+      }
       button.append(title, summary);
       button.onclick = () => { controller.selectRecord(entry); move("select"); window.render(); };
       results.append(button);

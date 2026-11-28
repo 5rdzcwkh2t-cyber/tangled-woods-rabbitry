@@ -75,10 +75,11 @@
     };
   }
 
-  async function listRabbits({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID } = {}) {
+  async function readRabbits({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, typedId } = {}) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");
     if (typeof rabbitryId !== "string" || !rabbitryId.trim()) throw new TypeError("rabbitryId is required");
-    const url = `${API}?rabbitryId=${encodeURIComponent(rabbitryId)}`;
+    const url = `${API}?rabbitryId=${encodeURIComponent(rabbitryId)}` +
+      (typedId === undefined ? "" : `&typedId=${encodeURIComponent(typedId)}`);
     let response;
     try {
       response = await fetchImpl(url, {
@@ -106,10 +107,23 @@
         category: "http"
       });
     }
-    if (!isObject(body) || body.rabbitryId !== rabbitryId || !Array.isArray(body.rabbits)) {
+    if (!isObject(body) || body.rabbitryId !== rabbitryId) {
       throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
     }
+    if (typedId !== undefined) {
+      const entry = validateItem(body.rabbit, rabbitryId);
+      if (entry.metadata.typedId !== typedId) throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
+      return entry;
+    }
+    if (!Array.isArray(body.rabbits)) throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
     return body.rabbits.map((item) => validateItem(item, rabbitryId));
+  }
+
+  const listRabbits = ({ fetchImpl, rabbitryId } = {}) => readRabbits({ fetchImpl, rabbitryId });
+
+  function getRabbit(options) {
+    if (typeof options?.typedId !== "string" || !options.typedId) throw new TypeError("A typed rabbit ID is required");
+    return readRabbits(options);
   }
 
   function createRabbitId() {
@@ -298,6 +312,7 @@
     DEFAULT_RABBITRY_ID,
     CloudRabbitError,
     listRabbits,
+    getRabbit,
     getPedigree,
     createRabbitId,
     createRabbit,

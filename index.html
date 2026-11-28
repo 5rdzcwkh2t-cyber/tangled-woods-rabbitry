@@ -22,6 +22,26 @@ header.brand-header{display:flex;align-items:center;gap:14px}.brand-logo{width:7
   .tabs button{flex:1 1 calc(50% - 6px);padding:9px 8px;font-size:14px}
 }
 </style>
+<style id="tw-cloud-photo-layout">
+ .tw-cloud-photo-actions {display:flex;flex-wrap:wrap;align-items:start;gap:.65rem;margin:.6rem 0;}
+ .tw-cloud-photo-picker {display:block;max-width:100%;min-width:0;font-size:.9rem;}
+ .tw-cloud-photo-picker input {display:block;width:100%;max-width:100%;box-sizing:border-box;}
+ .tw-cloud-photo-gallery .tw-gallery-grid {grid-template-columns:repeat(auto-fit,minmax(min(100%,9rem),1fr));}
+ .tw-cloud-photo-gallery [hidden] {display:none!important;}
+ .tw-cloud-photo-gallery progress {width:min(100%,24rem);}
+ .tw-cloud-photo-thumb {display:block;width:100%;padding:.25rem;text-align:left;}
+ .tw-cloud-photo-gallery .tw-gallery-tile button,.tw-cloud-photo-actions button {min-height:44px;}
+ .tw-cloud-photo-card-image {width:4rem;height:4rem;object-fit:cover;border-radius:.45rem;float:left;margin-right:.65rem;}
+ .tw-cloud-photo-dialog {box-sizing:border-box;width:min(95vw,56rem);max-height:90vh;border:0;border-radius:.7rem;padding:1rem;overflow:auto;}
+ .tw-cloud-photo-dialog::backdrop {background:rgb(0 0 0 / .75);}
+ .tw-cloud-photo-view-image {display:grid;place-items:center;min-height:4rem;}
+ .tw-cloud-photo-view-image img {max-width:100%;max-height:65vh;object-fit:contain;}
+ @media (max-width:600px) {
+  .tw-cloud-photo-actions {gap:.45rem;}
+  .tw-cloud-photo-dialog {padding:.65rem;max-height:90dvh;}
+  .tw-cloud-photo-view-image img {max-height:60dvh;}
+ }
+</style>
 <style id="tw-cloud-pedigree-layout">
  .tw-cloud-parent-field {min-width:0;margin:12px 0;border:1px solid #d6e1d5;border-radius:8px;}
  .tw-cloud-parent-field input,.tw-cloud-parent-field select {width:100%;max-width:100%;box-sizing:border-box;}
@@ -3938,6 +3958,7 @@ render();
 <script src="cloud-backup-ui.js"></script>
 <script src="rabbit-management-controller.js"></script>
 <script src="versioned-rabbit-cloud-client.js"></script>
+<script src="cloud-rabbit-photo-gallery.js"></script>
 <script src="cloud-rabbit-source.js"></script>
 <script src="versioned-breeding-cloud-client.js"></script>
 <script src="cloud-breeding-source.js"></script>

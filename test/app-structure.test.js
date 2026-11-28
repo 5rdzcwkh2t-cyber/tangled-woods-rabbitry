@@ -13,6 +13,7 @@ test("application shell contains the critical local-first features", async () =>
   assert.match(html, /<script src="cloud-backup-ui\.js"><\/script>/);
   assert.match(html, /<script src="rabbit-management-controller\.js"><\/script>/);
   assert.match(html, /<script src="cloud-rabbit-source\.js"><\/script>/);
+  assert.match(html, /<script src="cloud-rabbit-photo-gallery\.js"><\/script>\s*<script src="cloud-rabbit-source\.js"><\/script>/);
   assert.match(html, /<script src="versioned-breeding-cloud-client\.js"><\/script>/);
   assert.match(html, /<script src="cloud-breeding-source\.js"><\/script>/);
   assert.match(html, /<script src="versioned-litter-cloud-client\.js"><\/script>/);
@@ -77,6 +78,7 @@ test("service worker caches the application shell", async () => {
     "./cloud-backup-ui.js",
     "./rabbit-management-controller.js",
     "./cloud-rabbit-source.js",
+    "./cloud-rabbit-photo-gallery.js",
     "./versioned-breeding-cloud-client.js",
     "./cloud-breeding-source.js",
     "./versioned-litter-cloud-client.js",
@@ -88,6 +90,6 @@ test("service worker caches the application shell", async () => {
     assert.ok(worker.includes(`'${asset}'`), `service worker does not cache ${asset}`);
   }
   assert.match(worker, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(worker, /v4e54-cloud-pedigrees/);
+  assert.match(worker, /v4e6b-cloud-photos/);
 });
 
