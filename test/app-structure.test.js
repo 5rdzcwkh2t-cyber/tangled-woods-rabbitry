@@ -88,6 +88,6 @@ test("service worker caches the application shell", async () => {
     assert.ok(worker.includes(`'${asset}'`), `service worker does not cache ${asset}`);
   }
   assert.match(worker, /pathname\.startsWith\('\/api\/'\)/);
-  assert.match(worker, /v4e5-cloud-litters/);
+  assert.match(worker, /v4e54-cloud-pedigrees/);
 });
 

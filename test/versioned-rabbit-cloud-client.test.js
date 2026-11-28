@@ -8,7 +8,7 @@ const clientUrl = new URL("../versioned-rabbit-cloud-client.js", import.meta.url
 async function loadClient() {
   const source = await readFile(clientUrl, "utf8");
   const context = {
-    window: {}, structuredClone, ArrayBuffer, DataView,
+    window: {}, structuredClone, ArrayBuffer, DataView, URLSearchParams,
     crypto: { randomUUID: () => "123e4567-e89b-42d3-a456-426614174000" }
   };
   vm.runInNewContext(source, context, { filename: "versioned-rabbit-cloud-client.js" });
@@ -33,6 +33,51 @@ function item(id = "rabbit-1", revision = 0) {
 function response(body, status = 200) {
   return { ok: status >= 200 && status < 300, status, json: async () => body };
 }
+
+test("pedigree GET scopes the request, rejects malformed trees and reports offline errors", async () => {
+  const { client } = await loadClient();
+  const typedId = item().typedId;
+  const root = { path: "", label: "Maple", status: "active", details: {} };
+  const options = { rabbitryId: "woods", typedId, generations: 5 };
+  const tree = [root];
+  for (let depth = 1; depth < 5; depth++) {
+    for (let index = 0; index < 2 ** depth; index++) {
+      tree.push({ ...root, path: index.toString(2).padStart(depth, "0") });
+    }
+  }
+  const body = { ...options, nodes: tree };
+  const nodes = await client.getPedigree({ ...options, fetchImpl: async (url, init) => {
+    const query = new URL(url, "https://local.test").searchParams;
+    assert.deepEqual(Object.fromEntries(query), { ...options, generations: "5" });
+    assert.equal(init.method, "GET");
+    assert.equal(init.cache, "no-store");
+    return response(body);
+  } });
+  assert.deepEqual(nodes, tree);
+  for (const bad of [{ ...body, rabbitryId: "other" }, { ...body, nodes: [root] },
+    { ...body, nodes: [...tree.slice(0, -1), root] },
+    { ...body, nodes: [...tree.slice(0, -1), { ...root, path: "00000" }] }]) {
+    await assert.rejects(client.getPedigree({ ...options, fetchImpl: async () => response(bad) }),
+      { category: "malformed" });
+  }
+  await assert.rejects(client.getPedigree({ ...options, fetchImpl: async () => { throw Error("offline"); } }),
+    { offline: true });
+  await assert.rejects(client.getPedigree({ ...options, fetchImpl: async () => response({}, 403) }), { status: 403 });
+});
+
+test("parent commands travel separately from records and keep useful conflict categories", async () => {
+  const { client } = await loadClient();
+  const record = item().envelope.record;
+  const changes = { Father: null, Mother: item("dam").typedId };
+  await client.updateRabbit({ baseRevision: 0, record, parentChanges: changes, fetchImpl: async (_, init) => {
+    assert.deepEqual(JSON.parse(init.body).parentChanges, changes);
+    assert.deepEqual(JSON.parse(init.body).record, record);
+    return response({ updated: true, rabbitryId: "dev-auth-test", rabbit: item(record._id, 1) });
+  } });
+  await assert.rejects(client.updateRabbit({ baseRevision: 0, record, parentChanges: changes,
+    fetchImpl: async () => response({ error: "Parent assignment would create an ancestry cycle" }, 409) }),
+  { category: "ancestry-cycle" });
+});
 
 test("lists versioned rabbits and separates editable records from metadata", async () => {
   const { client } = await loadClient();

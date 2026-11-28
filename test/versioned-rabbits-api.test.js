@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
 import { onRequestGet } from "../functions/api/test-versioned-rabbits.js";
 import { createRabbitEnvelope, deriveRabbitProjections } from "../rabbit-record-contract.js";
@@ -60,6 +61,56 @@ function addVersion(database, rabbitryId, value, deletedAt = null, typedId = enc
     deletedAt, projections.name, projections.sex, projections.birthDate, JSON.stringify(value)
   );
 }
+
+test("pedigree reads are authenticated, scoped, bounded and retain historical branches", async t => {
+  const { database, env, accessToken, close } = await createTestDatabase({ through: 7 });
+  t.after(close);
+  for (const id of ["woods-a", "woods-b"]) addRabbitry(database, id);
+  addMembership(database, "woods-a", "integration-test-user");
+  const add = (id, fields = {}, deletedAt = null, rabbitryId = "woods-a") => {
+    const value = envelope(id, 0);
+    Object.assign(value.record, fields);
+    addVersion(database, rabbitryId, value, deletedAt);
+  };
+  const typed = encodeRabbitId;
+  add("root", { FatherTypedId: typed(7), Father: "Original sire", MotherTypedId: typed("7") });
+  add(7, { Archived: true, FatherTypedId: typed("shared"), Mother: "Text-only dam" });
+  add("7", { FatherTypedId: typed("shared"), MotherTypedId: typed("foreign"), Mother: "Unavailable dam" }, now);
+  add("shared", { FatherTypedId: typed("root"), Father: "Cycle snapshot", MotherTypedId: typed("older") });
+  add("older", { FatherTypedId: "malformed", Father: "Malformed link snapshot", Mother: "Distant text ancestor" });
+  add("foreign", { Name: "Must not leak" }, null, "woods-b");
+  database.exec(await readFile(new URL("../migrations/008_versioned_rabbit_pedigrees.sql", import.meta.url), "utf8"));
+  const get = (generations, { id = typed("root"), rabbitryId = "woods-a", token = accessToken } = {}) =>
+    onRequestGet({ request: request(token, rabbitryId, id, { generations }), env });
+  await responseJson(await get("3", { token: null }), 401);
+  await responseJson(await get("3", { rabbitryId: "woods-b" }), 404);
+  await responseJson(await get("4"), 400);
+  await responseJson(await get("3", { id: typed("7") }), 404);
+  const result = await get("3");
+  assert.equal(result.headers.get("Cache-Control"), "no-store");
+  const three = await responseJson(result, 200);
+  assert.equal(three.nodes.length, 7);
+  const at = (body, path) => body.nodes.find(node => node.path === path);
+  assert.equal(at(three, "0").status, "archived");
+  assert.equal(at(three, "0").label, "Original sire");
+  assert.equal(at(three, "1").status, "deleted");
+  assert.equal(at(three, "01").label, "Text-only dam");
+  assert.equal(at(three, "01").status, "text-only");
+  assert.equal(at(three, "11").status, "unavailable");
+  assert.equal(at(three, "11").label, "Unavailable dam");
+  assert.equal(at(three, "00").label, at(three, "10").label);
+  assert.equal(at(three, "10").status, "active");
+  assert.ok(!JSON.stringify(three).includes("Must not leak"));
+  assert.ok(!JSON.stringify(three).includes("imported"));
+  const five = await responseJson(await get("5"), 200);
+  assert.equal(five.nodes.length, 31);
+  assert.equal(at(five, "000").status, "cycle");
+  assert.equal(at(five, "000").label, "Cycle snapshot");
+  assert.equal(at(five, "0011").label, "Distant text ancestor");
+  assert.equal(at(five, "0010").status, "unavailable");
+  assert.equal(at(five, "0010").label, "Malformed link snapshot");
+  assert.equal(at(five, "1011").label, "Distant text ancestor");
+});
 
 test("missing and invalid JWTs are rejected before database access", async () => {
   const auth = await getTestAuth();

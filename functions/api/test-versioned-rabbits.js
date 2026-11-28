@@ -2,6 +2,7 @@ import { verifyAccessJwt } from "./_shared/access-auth.js";
 import { requireTestEnvironment } from "./_shared/test-environment.js";
 import { validateRabbitEnvelope } from "../../rabbit-record-contract.js";
 import { decodeRabbitId, encodeRabbitId } from "../../rabbit-typed-id.js";
+import { loadPedigree } from "./_shared/cloud-pedigree.js";
 
 const ACTIVE_ROLES = new Set(["owner", "admin", "editor", "viewer"]);
 
@@ -33,6 +34,10 @@ function requestParameters(request) {
     return { error: reply({ error: "Invalid rabbitry ID" }, 400) };
   }
   const typedId = url.searchParams.get("typedId");
+  const generations = url.searchParams.get("generations");
+  if (generations !== null && (typedId === null || !["3", "5"].includes(generations))) {
+    return { error: reply({ error: "A typed rabbit ID and 3 or 5 generations are required" }, 400) };
+  }
   if (typedId !== null) {
     try {
       const decoded = decodeRabbitId(typedId);
@@ -41,7 +46,7 @@ function requestParameters(request) {
       return { error: reply({ error: "Invalid typed rabbit ID" }, 400) };
     }
   }
-  return { rabbitryId, typedId };
+  return { rabbitryId, typedId, generations: Number(generations) };
 }
 
 async function activeMembership(env, rabbitryId, subject) {
@@ -108,6 +113,12 @@ export async function onRequestGet({ request, env }) {
 
     const membership = await activeMembership(env, parameters.rabbitryId, auth.subject);
     if (!membership) return reply({ error: "Rabbitry not found" }, 404);
+
+    if (parameters.generations) {
+      const { rabbitryId, typedId, generations } = parameters;
+      const nodes = await loadPedigree(env.DB, rabbitryId, typedId, generations, validatedResult);
+      return nodes ? reply({ rabbitryId, typedId, generations, nodes }) : reply({ error: "Rabbit not found" }, 404);
+    }
 
     const statement = env.DB.prepare(latestQuery(parameters.typedId !== null));
     const bound = parameters.typedId === null

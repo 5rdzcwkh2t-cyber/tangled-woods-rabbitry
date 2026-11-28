@@ -50,6 +50,7 @@ async function loadController(fetchImpl) {
     createMilestoneRevision: context.window.twCloudRabbitSource.createMilestoneRevision,
     createWeightRevision: context.window.twCloudRabbitSource.createWeightRevision,
     filterCloudRecords: context.window.twCloudRabbitSource.filterCloudRecords,
+    eligibleParents: context.window.twCloudRabbitSource.eligibleParents,
     isDevelopmentPreviewHost: context.window.twCloudRabbitSource.isDevelopmentPreviewHost,
     isValidDate: context.window.twCloudRabbitSource.isValidDate,
     nextCloudView: context.window.twCloudRabbitSource.nextCloudView,
@@ -175,10 +176,12 @@ test("archive revisions are deep complete-record clones that preserve canonical 
 test("unified cloud navigation follows explicit list, detail, create, edit, and confirmation states", async () => {
   const { CLOUD_VIEWS, nextCloudView } = await loadController(async () => { throw new Error("unused"); });
   assert.deepEqual(Array.from(CLOUD_VIEWS), [
-    "list", "detail", "create", "edit", "edit-weight", "edit-milestones", "confirm-delete"
+    "list", "detail", "create", "edit", "edit-weight", "edit-milestones", "confirm-delete", "pedigree"
   ]);
   assert.equal(nextCloudView("list", "select"), "detail");
   assert.equal(nextCloudView("detail", "edit"), "edit");
+  assert.equal(nextCloudView("detail", "pedigree"), "pedigree");
+  assert.equal(nextCloudView("pedigree", "back"), "detail");
   assert.equal(nextCloudView("detail", "weight"), "edit-weight");
   assert.equal(nextCloudView("detail", "milestones"), "edit-milestones");
   assert.equal(nextCloudView("edit", "cancel"), "detail");
@@ -193,6 +196,22 @@ test("unified cloud navigation follows explicit list, detail, create, edit, and 
   assert.equal(nextCloudView("create", "success"), "detail");
   assert.equal(nextCloudView("edit", "reset"), "list");
   assert.throws(() => nextCloudView("list", "edit"), /navigation/);
+});
+
+test("parent picker searches eligible cloud rabbits and preserves typed identities", async () => {
+  const { eligibleParents } = await loadController(async () => { throw new Error("unused"); });
+  const item = (_id, fields, metadata = {}) => ({ record: { _id, ...fields }, metadata });
+  const records = [
+    item(7, { Name: "Child", Sex: "Buck", Tattoo: "A2" }),
+    item("7", { Name: "Alder", Sex: " BUCK ", Tattoo: "A2" }),
+    item("archived", { Name: "Old Alder", Sex: "Buck", Tattoo: "A2", Archived: true }),
+    item("deleted", { Name: "Former Alder", Sex: "Buck", Tattoo: "A2" }, { deletedAt: "2026-01-01" }),
+    item("unknown", { Name: "Unknown", Sex: "Unknown", Tattoo: "A2" }),
+    item("dam", { name: "Juniper", sex: "Doe", Breed: "Rex" }),
+    item("blank", { Name: " ", Sex: "Doe", Breed: "Rex" })
+  ];
+  assert.deepEqual(Array.from(eligibleParents(records, 7, "Father", " a2 "), x => x.record._id), ["7"]);
+  assert.deepEqual(Array.from(eligibleParents(records, 7, "Mother", "rex"), x => x.record._id), ["dam"]);
 });
 
 test("cloud-first activation is limited to development Preview hosts", async () => {
@@ -407,6 +426,7 @@ test("successful cloud edits replace only the matching versioned entry and incre
   const first = controller.updateCloud(entry, edited);
   const second = controller.updateCloud(entry, edited);
   assert.equal(first, second);
+  await assert.rejects(controller.updateCloud(entry, edited, { Father: null }), { category: "save-in-progress" });
   const updated = await first;
   assert.equal(updateCalls, 1);
   assert.equal(requestBody.baseRevision, 2);

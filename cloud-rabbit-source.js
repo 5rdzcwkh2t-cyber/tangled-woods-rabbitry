@@ -3,7 +3,7 @@
 
   const PREVIEW_PROJECT = "tangled-woods-rabbitry.pages.dev";
   const CLOUD_VIEWS = Object.freeze([
-    "list", "detail", "create", "edit", "edit-weight", "edit-milestones", "confirm-delete"
+    "list", "detail", "create", "edit", "edit-weight", "edit-milestones", "confirm-delete", "pedigree"
   ]);
   const CLOUD_ARCHIVE_FILTERS = Object.freeze(["active", "archived"]);
   const MAX_WEIGHT_ENTRIES = 500;
@@ -19,6 +19,17 @@
 
   function isArchivedRabbit(record) {
     return record?.Archived === true;
+  }
+
+  function eligibleParents(records, childId, role, search = "") {
+    const sex = role === "Father" ? "buck" : "doe";
+    const term = search.trim().toLowerCase();
+    return records.filter(({ record, metadata }) =>
+      !Object.is(record._id, childId) && !metadata.deletedAt && !isArchivedRabbit(record) &&
+      String(record.Sex ?? record.sex ?? "").trim().toLowerCase() === sex &&
+      typeof (record.Name ?? record.name) === "string" && (record.Name ?? record.name).trim() &&
+      [rabbitLabel(record), record.Tattoo, record.Breed].some(value => String(value ?? "").toLowerCase().includes(term))
+    ).sort((a, b) => rabbitLabel(a.record).localeCompare(rabbitLabel(b.record)));
   }
 
   function filterCloudRecords(records, archiveFilter) {
@@ -140,7 +151,8 @@
     if (action === "reset") return "list";
     const transitions = {
       list: { select: "detail", create: "create" },
-      detail: { back: "list", edit: "edit", weight: "edit-weight", milestones: "edit-milestones", delete: "confirm-delete" },
+      detail: { back: "list", edit: "edit", weight: "edit-weight", milestones: "edit-milestones", delete: "confirm-delete", pedigree: "pedigree" },
+      pedigree: { back: "detail" },
       create: { cancel: "list", success: "detail" },
       edit: { cancel: "detail", success: "detail" },
       "edit-weight": { cancel: "detail", success: "detail" },
@@ -159,10 +171,15 @@
   }
 
   function requestMessage(error) {
+    if (error?.category === "save-in-progress") return "Another cloud rabbit save is still in progress. Wait for it to finish, then try again.";
     if (window.twVersionedRabbitClient?.requestMessage) {
       return window.twVersionedRabbitClient.requestMessage(error);
     }
     return "Cloud rabbits could not be loaded. Try again; local rabbits were not changed.";
+  }
+
+  function pendingSaveError() {
+    return Object.assign(new Error("Cloud rabbit save in progress"), { category: "save-in-progress" });
   }
 
   function createController({ fetchImpl, render, client = window.twVersionedRabbitClient }) {
@@ -178,6 +195,8 @@
     let requestVersion = 0;
     let createPromise = null;
     let updatePromise = null;
+    let createPayload = null;
+    let updatePayload = null;
     let deletePromise = null;
 
     const snapshot = () => {
@@ -240,16 +259,19 @@
       return version === requestVersion && status === "ready";
     }
 
-    function createCloud(record) {
+    function createCloud(record, parentChanges) {
       if (management.getState().source.key !== cloudSource.key || !client || typeof client.createRabbit !== "function") {
         return Promise.reject(new Error("Cloud rabbit creation is unavailable"));
       }
-      if (createPromise) return createPromise;
       const version = requestVersion;
+      const payload = JSON.stringify([version, record, parentChanges]);
+      if (createPromise) return payload === createPayload ? createPromise : Promise.reject(pendingSaveError());
+      createPayload = payload;
       createPromise = client.createRabbit({
         fetchImpl,
         rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test",
-        record
+        record,
+        ...(parentChanges ? { parentChanges } : {})
       }).then((created) => {
         if (version === requestVersion && management.getState().source.key === cloudSource.key) {
           created = management.upsert(created);
@@ -262,20 +284,23 @@
       return createPromise;
     }
 
-    function updateCloud(entry, record) {
+    function updateCloud(entry, record, parentChanges) {
       if (management.getState().source.key !== cloudSource.key || !client || typeof client.updateRabbit !== "function") {
         return Promise.reject(new Error("Cloud rabbit editing is unavailable"));
       }
       if (!entry || !entry.metadata || !Object.is(entry.metadata.id, record?._id)) {
         return Promise.reject(new Error("Cloud rabbit identity changed"));
       }
-      if (updatePromise) return updatePromise;
       const version = requestVersion;
+      const payload = JSON.stringify([version, entry.metadata.revision, record, parentChanges]);
+      if (updatePromise) return payload === updatePayload ? updatePromise : Promise.reject(pendingSaveError());
+      updatePayload = payload;
       updatePromise = client.updateRabbit({
         fetchImpl,
         rabbitryId: client.DEFAULT_RABBITRY_ID || "dev-auth-test",
         baseRevision: entry.metadata.revision,
-        record
+        record,
+        ...(parentChanges ? { parentChanges } : {})
       }).then((updated) => {
         if (version === requestVersion && management.getState().source.key === cloudSource.key) {
           if (!management.getState().records.some(candidate => candidate.metadata.identityKey === entry.metadata.identityKey)) {
@@ -332,7 +357,7 @@
     MILESTONE_FIELDS, buildWeightHistoryFromDraft, clearMilestoneDraft, createArchiveRevision, createController, createMilestoneRevision,
     createWeightRevision, filterCloudRecords, isArchivedRabbit, isDevelopmentPreviewHost,
     isValidDate, nextCloudView, requestMessage, validateMilestones, validateWeightHistory,
-    weightFromParts
+    weightFromParts, eligibleParents
   };
 
   if (typeof window.render !== "function" || typeof window.nav !== "function") return;
@@ -346,6 +371,8 @@
   let editDraft = null;
   let weightDraft = null;
   let milestoneDraft = null;
+  let pedigreeGenerations = 3;
+  const parentDrafts = new WeakMap();
   const cloudFirstPreview = isDevelopmentPreviewHost(window.location?.hostname);
   let previewInitialized = false;
 
@@ -360,6 +387,7 @@
     editDraft = null;
     weightDraft = null;
     milestoneDraft = null;
+    pedigreeGenerations = 3;
   }
 
   function operationContext(state, identityKey = null) {
@@ -440,7 +468,156 @@
   }
 
   function rabbitLabel(rabbit) {
-    return [rabbit.Prefix, rabbit.Name].filter(Boolean).join(" ") || "Unnamed rabbit";
+    return [rabbit.Prefix, rabbit.Name ?? rabbit.name].filter(Boolean).join(" ") || "Unnamed rabbit";
+  }
+
+  function renderParentField(state, draft, role, changes) {
+    const title = role === "Father" ? "Sire" : "Dam";
+    const group = node("fieldset", undefined, "tw-cloud-parent-field");
+    group.append(node("legend", title));
+    if (Object.hasOwn(draft, "litterTypedId")) {
+      group.append(node("p", `${draft[role] || "Unknown"} · Inherited from litter`));
+      return group;
+    }
+    const current = draft[`${role}TypedId`];
+    const searchLabel = node("label", `Search eligible ${title.toLowerCase()}s by name, tattoo or breed`);
+    const search = document.createElement("input");
+    search.type = "search";
+    searchLabel.append(search);
+    const choiceLabel = node("label", `Choose ${title.toLowerCase()}`);
+    const choice = document.createElement("select");
+    choiceLabel.append(choice);
+    const textLabel = node("label", "Historical name (text only)");
+    const text = document.createElement("input");
+    text.value = draft[role] || "";
+    text.oninput = () => { draft[role] = text.value; };
+    textLabel.append(text);
+    const result = node("p", "", "muted");
+    result.setAttribute("role", "status");
+    const selectedId = () => Object.hasOwn(changes, role) ? changes[role] : current;
+    const syncText = () => { textLabel.hidden = !!current || !!selectedId(); };
+    function appendChoice(value, label) {
+      const option = node("option", label);
+      option.value = value;
+      choice.append(option);
+    }
+    function refresh() {
+      const selected = selectedId();
+      const matches = eligibleParents(state.records, draft._id, role, search.value);
+      choice.replaceChildren();
+      appendChoice("", current ? "Clear parent link and name" : "No linked rabbit");
+      if (current) appendChoice(current, `Keep current: ${draft[role] || "Linked rabbit"}`);
+      for (const candidate of matches) {
+        const { record, metadata } = candidate;
+        if (metadata.typedId !== current) appendChoice(metadata.typedId, `${rabbitLabel(record)} · ${record.Tattoo || "No tattoo"}`);
+      }
+      if (selected && ![...choice.options].some(option => option.value === selected)) {
+        const retained = state.records.find(candidate => candidate.metadata.typedId === selected);
+        appendChoice(selected, retained ? rabbitLabel(retained.record) : "Selected rabbit");
+      }
+      choice.value = selected || "";
+      result.textContent = matches.length ? `${matches.length} eligible matches` : "No eligible matches";
+      syncText();
+    }
+    search.oninput = refresh;
+    choice.onchange = () => {
+      const id = choice.value || null;
+      if (id === (current || null)) delete changes[role];
+      else changes[role] = id;
+      syncText();
+    };
+    refresh();
+    group.append(searchLabel, choiceLabel, result, textLabel);
+    return group;
+  }
+
+  function renderCloudPedigree(view, state, entry) {
+    view.append(sourceControls(state));
+    const controls = node("div", undefined, "row no-print");
+    const back = node("button", "Back to rabbit");
+    back.type = "button";
+    back.onclick = () => { move("back"); window.render(); };
+    const label = node("label", "Generations");
+    const select = document.createElement("select");
+    for (const count of [3, 5]) {
+      const option = node("option", `${count} generations`);
+      option.value = String(count);
+      select.append(option);
+    }
+    select.value = String(pedigreeGenerations);
+    select.onchange = () => { pedigreeGenerations = Number(select.value); window.render(); };
+    label.append(select);
+    const print = node("button", "Print / Save PDF");
+    print.type = "button";
+    print.disabled = true;
+    print.onclick = () => window.print();
+    controls.append(back, label, print);
+    const status = node("p", "Loading cloud pedigree…", "no-print");
+    status.setAttribute("role", "status");
+    view.append(controls, status);
+    const generations = pedigreeGenerations;
+    const context = operationContext(state, entry.metadata.identityKey);
+    const current = () => status.isConnected && pedigreeGenerations === generations && contextIsCurrent(context, true);
+    window.twVersionedRabbitClient.getPedigree({
+      fetchImpl: (...args) => fetch(...args),
+      rabbitryId: entry.metadata.rabbitryId,
+      typedId: entry.metadata.typedId,
+      generations
+    }).then(nodes => {
+      if (!current()) return;
+      const byPath = new Map(nodes.map(item => [item.path, item]));
+      const sheet = node("section", undefined, "tw-ped-print tw-cloud-pedigree");
+      const header = node("div", undefined, "card tw-ped-head");
+      const brand = node("div", undefined, "pedigree-brand");
+      const logo = node("img");
+      logo.src = "./tangled-woods-logo.jpg";
+      logo.alt = "Tangled Woods Rabbitry";
+      brand.append(logo, node("strong", `Tangled Woods Rabbitry · ${generations}-Generation Pedigree`));
+      header.append(brand);
+      const labels = node("div", undefined, "tw-ped-labels");
+      const tree = node("div", undefined, "tw-ped-tree");
+      tree.dataset.gens = String(generations);
+      for (const element of [labels, tree]) element.style.setProperty("--tw-cols", generations);
+      const headings = ["Rabbit", "Parents", "Grandparents", "Great-grandparents", "4th generation ancestors"];
+      const statuses = { archived: "Archived", deleted: "Deleted", unavailable: "Unavailable",
+        cycle: "Cycle detected", "text-only": "Historical name only", unknown: "Not recorded" };
+      for (let depth = 0; depth < generations; depth++) {
+        labels.append(node("div", headings[depth]));
+        const column = node("div", undefined, "tw-ped-col");
+        column.style.setProperty("--tw-rows", 2 ** depth);
+        for (let position = 0; position < 2 ** depth; position++) {
+          const path = depth ? position.toString(2).padStart(depth, "0") : "";
+          const item = byPath.get(path) || { label: "Unknown", status: "unknown", details: {} };
+          const cell = node("div", undefined, `tw-ped-cell ${item.status}`);
+          cell.append(node("strong", item.label));
+          const details = Object.entries(item.details).map(([key, value]) => `${key}: ${value}`).join(" · ");
+          if (details) cell.append(node("small", details));
+          if (statuses[item.status]) cell.append(node("small", statuses[item.status]));
+          column.append(cell);
+        }
+        tree.append(column);
+      }
+      const scroll = node("div", undefined, "tw-cloud-pedigree-scroll");
+      scroll.tabIndex = 0;
+      scroll.setAttribute("role", "region");
+      scroll.setAttribute("aria-label", "Pedigree tree");
+      scroll.append(labels, tree);
+      sheet.append(header, scroll, node("div",
+        "I certify this pedigree is correct to the best of my knowledge. Signature: ________________________ Date: __________",
+        "tw-ped-sign"));
+      view.append(sheet);
+      status.textContent = "Cloud pedigree loaded.";
+      print.disabled = false;
+    }).catch(error => {
+      if (!current()) return;
+      status.textContent = error?.offline ? "Cloud pedigree unavailable offline. Reconnect and try again."
+        : error?.status === 404 ? "This cloud rabbit is no longer available. Reload cloud rabbits."
+          : requestMessage(error);
+      const retry = node("button", "Retry", "no-print");
+      retry.type = "button";
+      retry.onclick = () => window.render();
+      controls.append(retry);
+    });
   }
 
   function weightLabel(ounces) {
@@ -566,7 +743,7 @@
     back.onclick = () => { controller.clearSelection(); move("back"); window.render(); };
     const heading = node("h2", rabbitLabel(rabbit));
     const notice = node("p", "Development cloud rabbit.", "tw-cloud-app-banner");
-    notice.textContent = "Development cloud rabbit. Editing or soft deletion creates a new revision. Breeding, litters, pedigrees, photographs, importing, and restoring remain local-only.";
+    notice.textContent = "Editing or soft deletion creates a new cloud revision. Photographs remain local.";
     const card = node("div", undefined, "card");
     if (state.message) {
       const status = node("p", state.message, "muted");
@@ -620,7 +797,10 @@
     remove.style.marginLeft = "auto";
     styleCloudDestructiveButton(remove);
     remove.onclick = () => { move("delete"); window.render(); };
-    actions.append(edit, archive, remove);
+    const pedigree = node("button", "View pedigree");
+    pedigree.type = "button";
+    pedigree.onclick = () => { move("pedigree"); window.render(); };
+    actions.append(edit, pedigree, archive, remove);
     card.append(actions, archiveStatus);
     const fields = CLOUD_PROFILE_FIELDS.filter((field) => field !== "Prefix" && field !== "Name");
     if (Object.hasOwn(rabbit, "DOB") && !Object.hasOwn(rabbit, "DoB")) fields.splice(6, 0, "DOB");
@@ -703,12 +883,17 @@
     const form = document.createElement("form");
     const dateField = Object.hasOwn(draft, "DOB") && !Object.hasOwn(draft, "DoB") ? "DOB" : "DoB";
     const fields = CLOUD_PROFILE_FIELDS.map((field) => field === "DoB" ? dateField : field);
+    const changes = parentDrafts.get(draft) || {};
+    parentDrafts.set(draft, changes);
     for (const field of fields) {
+      if (field === "Father" || field === "Mother") {
+        form.append(renderParentField(state, draft, field, changes));
+        continue;
+      }
       const label = node("label", field);
       const input = document.createElement(field === "Notes" || field === "Bio" ? "textarea" : "input");
       input.name = field;
       input.value = draft[field] || "";
-      if (draft.litterTypedId && (field === "Father" || field === "Mother")) input.readOnly = true;
       input.oninput = () => { draft[field] = input.value; };
       label.append(input);
       form.append(label);
@@ -725,10 +910,11 @@
       saveButton.disabled = true;
       status.textContent = "Saving cloud rabbit...";
       try {
+        const parentChanges = Object.keys(changes).length ? changes : undefined;
         const saved = editing
-          ? await controller.updateCloud(entry, draft)
-          : await controller.createCloud(draft);
-        if (contextIsCurrent(context, editing)) {
+          ? await controller.updateCloud(entry, draft, parentChanges)
+          : await controller.createCloud(draft, parentChanges);
+        if (form.isConnected && contextIsCurrent(context, editing)) {
           if (editing) editDraft = null;
           else {
             createDraft = null;
@@ -738,7 +924,7 @@
           window.render();
         }
       } catch (error) {
-        if (contextIsCurrent(context, editing)) {
+        if (form.isConnected && contextIsCurrent(context, editing)) {
           status.textContent = requestMessage(error);
           saveButton.disabled = false;
         }
@@ -931,7 +1117,7 @@
     const notice = node("p", "This temporary view cannot change cloud or local records. Cloud photographs are not available.", "tw-cloud-app-banner");
     const badge = node("span", "Development cloud", "muted");
     badge.setAttribute("aria-label", "Rabbit source: Development cloud");
-    notice.textContent = "Versioned cloud rabbits are isolated from local and legacy cloud records. Relationship-dependent actions and photographs remain local-only.";
+    notice.textContent = "Versioned cloud rabbits are isolated from local and legacy cloud records. Photographs remain local.";
     const status = node("p", state.message, "muted");
     status.setAttribute("role", "status");
     view.append(heading, badge, notice, status);
@@ -1051,6 +1237,7 @@
     else if (viewMode === "edit-milestones" && state.selected && state.status === "ready") renderCloudMilestoneEditor(view, state, state.selected);
     else if (viewMode === "confirm-delete" && state.selected && state.status === "ready") renderCloudDeleteConfirmation(view, state, state.selected);
     else if (viewMode === "detail" && state.selected && state.status === "ready") renderCloudDetail(view, state, state.selected);
+    else if (viewMode === "pedigree" && state.selected && state.status === "ready") renderCloudPedigree(view, state, state.selected);
     else renderCloudList(view, state);
     return result;
   };

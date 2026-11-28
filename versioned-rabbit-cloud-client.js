@@ -119,6 +119,41 @@
     return `r-cloud-${crypto.randomUUID()}`;
   }
 
+  async function getPedigree({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, typedId, generations } = {}) {
+    if (typeof fetchImpl !== "function" || typeof typedId !== "string" || !typedId ||
+        ![3, 5].includes(generations)) throw new TypeError("Pedigree identity and generation count are required");
+    const query = new URLSearchParams({ rabbitryId, typedId, generations });
+    let response;
+    try {
+      response = await fetchImpl(`${API}?${query}`, {
+        method: "GET", credentials: "same-origin", cache: "no-store", headers: { Accept: "application/json" }
+      });
+    } catch {
+      throw new CloudRabbitError("Network request failed", { category: "network", offline: true });
+    }
+    if (!response.ok) throw new CloudRabbitError("Cloud pedigree request failed", { status: response.status });
+    const malformed = () => new CloudRabbitError("Invalid cloud pedigree response", { category: "malformed" });
+    let body;
+    try { body = await response.json(); } catch { throw malformed(); }
+    if (body?.rabbitryId !== rabbitryId || body.typedId !== typedId || body.generations !== generations ||
+        !Array.isArray(body.nodes) || body.nodes.length !== 2 ** generations - 1 || body.nodes[0]?.path !== "") throw malformed();
+    const paths = new Set();
+    for (const item of body.nodes) {
+      if (!isObject(item) || typeof item.path !== "string" || !/^[01]*$/.test(item.path) ||
+          item.path.length >= generations || paths.has(item.path) || typeof item.label !== "string" ||
+          !["active", "archived", "deleted", "unavailable", "cycle", "text-only", "unknown"].includes(item.status) ||
+          !isObject(item.details) || Object.values(item.details).some(value => typeof value !== "string")) throw malformed();
+      paths.add(item.path);
+    }
+    return clone(body.nodes);
+  }
+
+  function pedigreeConflict(body) {
+    if (body?.error === "Parent assignment would create an ancestry cycle") return "ancestry-cycle";
+    if (body?.error === "Parent selection changed before saving") return "parent-conflict";
+    return null;
+  }
+
   function createRabbit(options) {
     return createRecord(options);
   }
@@ -163,7 +198,7 @@
     if (!response.ok) {
       throw new CloudRabbitError("Cloud rabbit request failed", {
         status: response.status,
-        category: response.status === 400 ? "validation" : "http"
+        category: response.status === 400 ? "validation" : response.status === 409 ? pedigreeConflict(body) || "http" : "http"
       });
     }
     if (!isObject(body) || body.created !== true || body.rabbitryId !== rabbitryId) {
@@ -197,7 +232,7 @@
     catch { throw new CloudRabbitError("Invalid cloud rabbit response", { status: response.status, category: "malformed" }); }
     if (!response.ok) throw new CloudRabbitError("Cloud rabbit request failed", {
       status: response.status,
-      category: response.status === 409 ? "revision-conflict" : response.status === 400 ? "validation" : "http"
+      category: response.status === 409 ? pedigreeConflict(body) || "revision-conflict" : response.status === 400 ? "validation" : "http"
     });
     if (!isObject(body) || body.updated !== true || body.rabbitryId !== rabbitryId) {
       throw new CloudRabbitError("Invalid cloud rabbit response", { category: "malformed" });
@@ -244,6 +279,8 @@
   }
 
   function requestMessage(error) {
+    if (error?.category === "ancestry-cycle") return "That parent assignment would create an ancestry cycle. Choose a different parent.";
+    if (error?.category === "parent-conflict") return "A selected parent changed before saving. Reload cloud rabbits and review the selection.";
     if (error?.status === 401) return "Cloudflare Access authentication is required. Sign in, then try again.";
     if (error?.status === 403) return "Cloud rabbit access was denied. Confirm the Development D1 environment and your rabbitry role.";
     if (error?.status === 404) return "The development rabbitry could not be found or is not available to this account.";
@@ -261,6 +298,7 @@
     DEFAULT_RABBITRY_ID,
     CloudRabbitError,
     listRabbits,
+    getPedigree,
     createRabbitId,
     createRabbit,
     createKit,
