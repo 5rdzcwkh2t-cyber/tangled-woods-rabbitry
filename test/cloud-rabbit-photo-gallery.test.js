@@ -3,6 +3,7 @@ import { createHash, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
+import { inspectJpeg } from "../functions/api/_shared/photo-jpeg.js";
 
 const source = await readFile(new URL("../cloud-rabbit-photo-gallery.js", import.meta.url), "utf8");
 const origin = "https://preview.test";
@@ -101,45 +102,65 @@ test("compression draws an oriented decoded image onto a fresh 900-pixel JPEG ca
   await assert.rejects(compressPhoto(new Blob(["abc"], { type: "image/svg+xml" })), { category: "file" });
 });
 
-test("APP1 normalization removes one or multiple segments while preserving every other byte", async () => {
-  const { stripCanvasApp1 } = load();
-  assert.equal(await stripCanvasApp1(canvasJpeg), canvasJpeg);
+test("baseline normalization removes APP13, mixed APP metadata and comments while preserving all other bytes", async () => {
+  const { normalizeCanvasJpeg } = load();
+  assert.equal(await normalizeCanvasJpeg(canvasJpeg), canvasJpeg);
   const bytes = new Uint8Array(await canvasJpeg.arrayBuffer());
-  const app1 = [0xff, 0xe1, 0, 6, 0xff, 0xd9, 0xff, 0xda];
-  for (const metadata of [app1, [...app1, ...app1]]) {
+  const segment = marker => [0xff, marker, 0, 6, 0xff, 0xd9, 0xff, 0xda];
+  const kept = [0xe0, 0xe2, 0xee].flatMap(segment);
+  const removed = [0xe1, 0xe3, 0xe4, 0xe5, 0xe6, 0xe7, 0xe8, 0xe9, 0xea, 0xeb, 0xec, 0xed, 0xef, 0xfe];
+  for (const [metadata, retained] of [
+    [segment(0xed), []],
+    [[...segment(0xe1), ...kept, ...removed.flatMap(segment)], kept]
+  ]) {
+    const expected = Uint8Array.from([...bytes.subarray(0, 2), ...retained, ...bytes.subarray(2)]);
     const encoded = new Blob([bytes.subarray(0, 2), Uint8Array.from(metadata), bytes.subarray(2)], { type: "image/jpeg" });
-    const normalized = await stripCanvasApp1(encoded);
+    const normalized = await normalizeCanvasJpeg(encoded);
     assert.equal(normalized.type, "image/jpeg");
-    assert.deepEqual(new Uint8Array(await normalized.arrayBuffer()), bytes);
+    const actual = new Uint8Array(await normalized.arrayBuffer());
+    assert.deepEqual(actual, expected);
+    assert.deepEqual(inspectJpeg(actual), inspectJpeg(bytes));
   }
 });
 
-test("progressive APP1 normalization preserves scan stuffing, restart markers and color segments", async () => {
-  const { stripCanvasApp1 } = load();
+test("progressive normalization preserves scan stuffing, restart markers and color segments", async () => {
+  const { normalizeCanvasJpeg } = load();
   // Marker-walking fixture. Entropy bytes are synthetic, not a decodable image.
   const header = [0xff, 0xd8, 0xff, 0xe2, 0, 3, 0x49, 0xff, 0xee, 0, 3, 0x41,
     0xff, 0xc2, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0];
   const firstScan = [0xff, 0xda, 0, 8, 1, 1, 0, 0, 0, 0, 0xff, 0, 0xe1, 0xff, 0xd0, 0x43];
   const secondScan = [0xff, 0xda, 0, 8, 1, 1, 0, 1, 63, 0, 0x7f, 0xff, 0xd9];
-  const app1 = [0xff, 0xe1, 0, 4, 0x11, 0x22];
-  const encoded = new Blob([Uint8Array.from([...header, ...firstScan, ...app1, ...secondScan])], { type: "image/jpeg" });
-  assert.deepEqual(new Uint8Array(await (await stripCanvasApp1(encoded)).arrayBuffer()),
+  const metadata = [0xff, 0xed, 0, 4, 0x11, 0x22, 0xff, 0xfe, 0, 2];
+  const encoded = new Blob([Uint8Array.from([...header, ...firstScan, ...metadata, ...secondScan])], { type: "image/jpeg" });
+  assert.deepEqual(new Uint8Array(await (await normalizeCanvasJpeg(encoded)).arrayBuffer()),
     Uint8Array.from([...header, ...firstScan, ...secondScan]));
 });
 
-test("APP1 normalization rejects malformed lengths, marker boundaries and missing or trailing EOI", async () => {
-  const { stripCanvasApp1 } = load();
+test("metadata normalization rejects malformed lengths, marker boundaries and missing or trailing EOI", async () => {
+  const { normalizeCanvasJpeg } = load();
   const bytes = new Uint8Array(await canvasJpeg.arrayBuffer());
   for (const invalid of [
     [0xff, 0xd8, 0xff, 0xe1, 0, 1],
     [0xff, 0xd8, 0xff, 0xe1, 0],
     [0xff, 0xd8, 0xff, 0xe1, 0, 8, 0xff, 0xd9],
+    [0xff, 0xd8, 0xff, 0xed, 0, 1, ...bytes.subarray(2)],
+    [0xff, 0xd8, 0xff, 0xfe, 0xff, 0xff, ...bytes.subarray(2)],
     [0xff, 0xd8, 0x11, 0xff, 0xd9],
     bytes.subarray(0, -2),
     [...bytes, 0]
   ]) {
-    await assert.rejects(stripCanvasApp1(new Blob([Uint8Array.from(invalid)])), { category: "file" });
+    await assert.rejects(normalizeCanvasJpeg(new Blob([Uint8Array.from(invalid)])), { category: "file" });
   }
+});
+
+test("normalization retains unsupported coding markers for the strict server validator", async () => {
+  const { normalizeCanvasJpeg } = load();
+  const sof1 = Uint8Array.of(0xff, 0xc1, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0);
+  const expected = new Blob([canvasJpeg.slice(0, 2), sof1, canvasJpeg.slice(2)]);
+  const encoded = new Blob([expected.slice(0, 2), Uint8Array.of(0xff, 0xed, 0, 2), expected.slice(2)]);
+  const bytes = await (await normalizeCanvasJpeg(encoded)).arrayBuffer();
+  assert.deepEqual(bytes, await expected.arrayBuffer());
+  assert.throws(() => inspectJpeg(new Uint8Array(bytes)), { status: 415, code: "jpeg_frame" });
 });
 
 test("multiple uploads run sequentially and duplicate submission cannot start a second batch", async () => {

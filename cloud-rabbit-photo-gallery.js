@@ -208,7 +208,7 @@
     }
   }
 
-  async function stripCanvasApp1(jpeg) {
+  async function normalizeCanvasJpeg(jpeg) {
     const bytes = new Uint8Array(await jpeg.arrayBuffer());
     const invalid = () => { throw requestError(0, "file", "The prepared JPEG has invalid segment boundaries."); };
     if (bytes[0] !== 0xff || bytes[1] !== 0xd8) invalid();
@@ -217,7 +217,6 @@
     let sawScan = false;
     const parts = [];
     while (offset < bytes.length) {
-      const start = offset;
       if (bytes[offset++] !== 0xff) invalid();
       while (bytes[offset] === 0xff) offset++;
       const marker = bytes[offset++];
@@ -233,8 +232,11 @@
       const length = (bytes[offset] << 8) | bytes[offset + 1];
       const end = offset + length;
       if (length < 2 || end > bytes.length) invalid();
-      if (marker === 0xe1) {
-        // Keep any marker fill bytes. Drop only the APP1 marker and its segment.
+      // Match the server's APP allowlist. Keep JFIF, ICC and Adobe color
+      // information, and leave all coding markers for server validation.
+      const removableApp = marker >= 0xe0 && marker <= 0xef && ![0xe0, 0xe2, 0xee].includes(marker);
+      if (removableApp || marker === 0xfe) {
+        // Keep marker fill bytes and drop only this metadata segment.
         parts.push(bytes.subarray(keptFrom, offset - 2));
         keptFrom = end;
       }
@@ -278,12 +280,12 @@
       context.fillRect(0, 0, width, height);
       context.drawImage(decoded.image, 0, 0, width, height);
       // The decoder applies source orientation before drawing. Canvas encoders
-      // can still emit their own APP1 segments in the newly encoded JPEG.
+      // can still emit metadata in the newly encoded JPEG.
       const encoded = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.78));
       if (!encoded || encoded.type !== "image/jpeg" || !encoded.size || encoded.size > MAX_UPLOAD) {
         throw requestError(0, "file", "Could not create a JPEG within the upload limit.");
       }
-      const jpeg = await stripCanvasApp1(encoded);
+      const jpeg = await normalizeCanvasJpeg(encoded);
       report({ stage: "encoded", bytes: jpeg.size });
       return jpeg;
     } finally { decoded.close(); }
@@ -594,7 +596,7 @@
   }
 
   window.twCloudRabbitPhotos = { createApi, createJournal, createSession, primaryPhotoUrl, photoDimensions,
-    compressPhoto, stripCanvasApp1, mount };
+    compressPhoto, normalizeCanvasJpeg, mount };
 
   function node(tag, text, className) {
     const element = document.createElement(tag);
