@@ -845,6 +845,7 @@
     }
     view.append(sourceControls(state), back, heading, notice, card, gallery, weight, milestones);
     window.twCloudRabbitPhotos?.mount(gallery, entry, {
+      developmentDiagnostics: state.source === "cloud" && cloudFirstPreview,
       onBusy: busy => { galleryBusy = busy; syncProfileButtons(); },
       onSnapshot: async snapshot => {
         const currentState = controller.getState();

@@ -3,9 +3,10 @@ const MAX_EDGE = 2048;
 const MAX_PIXELS = 4_000_000;
 
 export class PhotoInputError extends Error {
-  constructor(message, status = 400) {
+  constructor(message, status = 400, code) {
     super(message);
     this.status = status;
+    this.code = code;
   }
 }
 
@@ -13,7 +14,7 @@ export async function readPhotoBytes(request) {
   const declared = request.headers.get("Content-Length");
   if (declared && Number(declared) > MAX_PHOTO_BYTES) throw new PhotoInputError("Photo exceeds byte limit", 413);
   if (request.headers.get("Content-Type")?.toLowerCase() !== "image/jpeg" || !request.body) {
-    throw new PhotoInputError("A normalized JPEG body is required", 415);
+    throw new PhotoInputError("A normalized JPEG body is required", 415, "jpeg_mime");
   }
   const reader = request.body.getReader();
   const parts = [];
@@ -43,9 +44,9 @@ export async function readPhotoBytes(request) {
 
 // Validate container structure and dimensions without decoding pixels at the edge.
 export function inspectJpeg(bytes) {
-  const invalid = () => { throw new PhotoInputError("Invalid or unsupported normalized JPEG", 415); };
+  const invalid = code => { throw new PhotoInputError("Invalid or unsupported normalized JPEG", 415, code); };
   const word = i => (bytes[i] << 8) | bytes[i + 1];
-  if (word(0) !== 0xffd8) invalid();
+  if (word(0) !== 0xffd8) invalid("jpeg_marker");
   let offset = 2;
   let dimensions;
   let components = 0;
@@ -53,28 +54,30 @@ export function inspectJpeg(bytes) {
   let quantization = false;
   let huffman = false;
   while (offset < bytes.length) {
-    if (bytes[offset++] !== 0xff) invalid();
+    if (bytes[offset++] !== 0xff) invalid("jpeg_marker");
     while (bytes[offset] === 0xff) offset++;
     const marker = bytes[offset++];
     if (marker === 0xd9) {
-      if (!scanned || offset !== bytes.length) invalid();
+      if (!scanned || offset !== bytes.length) invalid("jpeg_eoi");
       return dimensions;
     }
-    if (offset + 2 > bytes.length) invalid();
+    if (offset + 2 > bytes.length) invalid(scanned && marker === undefined ? "jpeg_eoi" : "jpeg_marker");
     const size = word(offset);
     const end = offset + size;
-    if (size < 2 || end > bytes.length) invalid();
+    if (size < 2 || end > bytes.length) invalid("jpeg_marker");
     if (marker === 0xc0 || marker === 0xc2) {
-      if (dimensions || size < 11 || bytes[offset + 2] !== 8) invalid();
+      if (dimensions || size < 11 || bytes[offset + 2] !== 8) invalid("jpeg_frame");
       const height = word(offset + 3);
       const width = word(offset + 5);
       components = bytes[offset + 7];
-      if (![1, 3].includes(components) || size !== 8 + 3 * components ||
-          !width || !height || width > MAX_EDGE || height > MAX_EDGE || width * height > MAX_PIXELS) invalid();
+      if (![1, 3].includes(components) || size !== 8 + 3 * components) invalid("jpeg_frame");
+      if (!width || !height || width > MAX_EDGE || height > MAX_EDGE || width * height > MAX_PIXELS) invalid("jpeg_dimension");
       dimensions = { width, height };
     } else if (marker === 0xda) {
       const count = bytes[offset + 2];
-      if (!dimensions || !quantization || !huffman || count < 1 || count > components || size !== 6 + 2 * count) invalid();
+      if (!dimensions) invalid("jpeg_scan");
+      if (!quantization || !huffman) invalid("jpeg_table");
+      if (count < 1 || count > components || size !== 6 + 2 * count) invalid("jpeg_scan");
       offset = end;
       const start = offset;
       while (offset < bytes.length) {
@@ -86,20 +89,21 @@ export function inspectJpeg(bytes) {
         offset = markerStart;
         break;
       }
-      if (offset === start) invalid();
+      if (offset === start) invalid("jpeg_scan");
       scanned = true;
       continue;
     } else if (marker === 0xdb) {
-      if (size < 67) invalid();
+      if (size < 67) invalid("jpeg_table");
       quantization = true;
     } else if (marker === 0xc4) {
-      if (size < 20) invalid();
+      if (size < 20) invalid("jpeg_table");
       huffman = true;
     } else if (![0xdd, 0xe0, 0xe2, 0xee].includes(marker)) {
       // EXIF, comments and unfamiliar data segments are not accepted.
-      invalid();
+      const unsupportedFrame = marker >= 0xc0 && marker <= 0xcf && ![0xc4, 0xc8, 0xcc].includes(marker);
+      invalid(unsupportedFrame ? "jpeg_frame" : "jpeg_marker");
     }
     offset = end;
   }
-  invalid();
+  invalid("jpeg_eoi");
 }

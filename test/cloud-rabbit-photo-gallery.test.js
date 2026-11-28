@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash, webcrypto } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import vm from "node:vm";
@@ -468,4 +469,37 @@ test("cancel recovery confirms a completed upload and retains the committed imag
   assert.match(session.getState().message, /already saved and has been kept/);
   assert.equal(session.getState().snapshot.gallery.primaryId, id(9));
   assert.equal(journal.list().length, 0);
+});
+
+test("development capture pauses before persistence or upload and sends the same hashed Blob", async () => {
+  const { createApi, createSession, createJournal } = load({ crypto: webcrypto });
+  const storage = storageFixture();
+  const journal = createJournal(scope, () => storage);
+  const operationId = id(7);
+  let sent;
+  const api = createApi(scope, {
+    fetchImpl: async url => ({ status: 200, url: origin + url, text: async () => JSON.stringify(result(4)) }),
+    upload: async (url, body) => {
+      sent = body;
+      return { status: 415, url: origin + url,
+        text: '{"outcome":"rejected","code":"jpeg_marker","error":"private detail"}' };
+    }
+  });
+  const session = createSession(api, { journal, canCapture: () => true,
+    makeId: () => operationId, compress: async () => jpeg });
+  await session.load();
+  await session.uploadFiles([jpeg]);
+  assert.equal(sent, undefined);
+  assert.equal(journal.list().length, 0);
+  assert.equal(await session.retry(), false);
+  assert.equal(await session.cancelRecovery(), false);
+  assert.equal(session.preparedJpeg(), jpeg);
+  const digest = createHash("sha256").update(Buffer.from(await jpeg.arrayBuffer())).digest("hex");
+  assert.equal(session.getState().diagnostic.sha256, digest);
+  await session.sendPrepared();
+  assert.equal(sent, jpeg);
+  assert.equal(session.preparedJpeg(), null);
+  assert.equal(journal.list().length, 0);
+  assert.equal(session.getState().diagnostic.rejectionCode, "jpeg_marker");
+  assert.doesNotMatch(JSON.stringify(session.getState()), /private detail/);
 });

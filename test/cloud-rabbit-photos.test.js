@@ -129,7 +129,7 @@ test("authorization, environment, scoped object access and actual upload limits 
   assert.equal((await f.post(add, { origin: "https://elsewhere.test" })).status, 403);
   assert.equal((await f.post({ ...add, typedId: "junk" })).status, 400);
   assert.equal((await f.post(add, { body: Buffer.alloc(2 * 1024 * 1024 + 1), headers: { "Content-Length": "1" } })).status, 413);
-  assert.equal((await f.post(add, { body: jpeg, type: "image/png" })).status, 415);
+  assert.equal((await json(await f.post(add, { body: jpeg, type: "image/png" }), 415)).code, "jpeg_mime");
   assert.equal((await f.post(add, { body: Buffer.from("<svg><script>alert(1)</script></svg>") })).status, 415);
   assert.equal((await f.post(add, { body: jpeg.subarray(0, jpeg.length - 2) })).status, 415);
   assert.equal((await f.post(add, { body: Buffer.concat([jpeg, Buffer.from("payload")]) })).status, 415);

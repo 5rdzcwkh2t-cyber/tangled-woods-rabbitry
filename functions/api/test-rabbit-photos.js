@@ -231,7 +231,9 @@ async function handle({ request, env }, write) {
       : gallery.primaryId === photo.id ? photos[0]?.id ?? null : gallery.primaryId;
     return await saveGallery(env, input, auth.subject, previous, { photos, primaryId });
   } catch (error) {
-    if (error instanceof PhotoInputError) return reply({ error: error.message, outcome: "rejected" }, error.status);
+    if (error instanceof PhotoInputError) return reply({
+      error: error.message, outcome: "rejected", ...(error.code ? { code: error.code } : {})
+    }, error.status);
     if (/UNIQUE constraint failed: rabbit_record_versions/i.test(String(error?.message))) return conflict();
     return reply({ error: "Cloud photo operation unavailable" }, 503);
   }

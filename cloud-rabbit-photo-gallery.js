@@ -70,9 +70,13 @@
     if (response.status !== 200) {
       const error = requestError(response.status, "http");
       try {
-        const outcome = JSON.parse(response.text)?.outcome;
+        const { outcome, code } = JSON.parse(response.text) || {};
         if (([400, 413, 415].includes(response.status) && outcome === "rejected") ||
             (response.status === 409 && outcome === "abandoned")) error.outcome = outcome;
+        if (response.status === 415 && error.outcome === "rejected" &&
+            ["jpeg_mime", "jpeg_frame", "jpeg_marker", "jpeg_table", "jpeg_scan", "jpeg_dimension", "jpeg_eoi"].includes(code)) {
+          error.rejectionCode = code;
+        }
       } catch { /* A proxy error can be an HTML response. */ }
       throw error;
     }
@@ -226,7 +230,7 @@
 
   function createSession(api, { compress = compressPhoto, makeId = () => crypto.randomUUID(),
     onChange = () => {}, onSnapshot = async () => {}, isCurrent = () => true,
-    journal, hash = photoHash } = {}) {
+    journal, hash = photoHash, canCapture = () => false } = {}) {
     let snapshot = null;
     let busy = false;
     let message = "";
@@ -235,7 +239,8 @@
     let reloadRequired = false;
     let recovery = null;
     let diagnostic = null;
-    const state = () => ({ snapshot, busy, message, progress, retry: !!batch, recovery, reloadRequired, diagnostic });
+    const state = () => ({ snapshot, busy, message, progress, retry: !!batch && !batch.paused,
+      prepared: !!batch?.paused, recovery, reloadRequired, diagnostic });
     const draw = () => { if (isCurrent()) onChange(state()); };
     const say = value => { message = value; draw(); };
     function report(data) {
@@ -306,12 +311,19 @@
             batch.pending = { action: batch.photoId ? "replace" : "add", baseRevision: snapshot.revision,
               ...(batch.photoId ? { photoId: batch.photoId } : {}), operationId, jpeg };
           }
-          if (journal && !batch.receipt) {
+          if (!batch.receipt && (journal || batch.capture)) {
             const { jpeg, ...operation } = batch.pending;
             batch.receipt = { ...operation, sha256: await hash(jpeg), remaining: batch.files.length - 1 };
           }
           if (!isCurrent()) break;
-          if (batch.receipt) {
+          if (batch.capture && !batch.reviewed) {
+            batch.reviewed = true;
+            batch.paused = true;
+            report({ stage: "ready-to-save", sha256: batch.receipt.sha256 });
+            say("Save the prepared JPEG, then tap Send prepared JPEG to upload it.");
+            return;
+          }
+          if (journal && batch.receipt) {
             try { journal.save(batch.receipt); }
             catch { throw requestError(0, "file", "Could not record upload recovery information. No upload was sent."); }
             if (batch.confirmedId && batch.confirmedId !== batch.receipt.operationId) {
@@ -340,6 +352,7 @@
           batch.files.shift();
           batch.pending = null;
           batch.sent = false;
+          batch.reviewed = false;
           saved++;
           if (result.replayed) {
             reloadRequired = true;
@@ -376,6 +389,7 @@
           const networkError = error?.category === "network"
             ? (["transport", "timeout", "aborted"].includes(error.networkError) ? error.networkError : "transport") : null;
           report({ httpStatus: error?.httpStatus ?? (error?.status || null), networkError,
+            ...(error?.rejectionCode ? { rejectionCode: error.rejectionCode } : {}),
             outcome: abandoned ? "abandoned" : rejected ? "rejected" : uncertain ? "uncertain" : "not-sent" });
         }
         const retry = uncertain && !reloadRequired &&
@@ -405,7 +419,7 @@
         say(photoId ? "Choose one replacement for an existing photograph." : "A rabbit can have at most 10 photos.");
         return Promise.resolve(false);
       }
-      batch = { files: list, total: list.length, photoId, pending: null };
+      batch = { files: list, total: list.length, photoId, pending: null, capture: canCapture() };
       return perform(sendBatch);
     }
     function change(action, photoId) {
@@ -457,7 +471,7 @@
       });
     }
     function cancelRecovery() {
-      const pending = batch?.receipt || recovery;
+      const pending = (batch?.sent && batch.receipt) || recovery;
       if (!pending) return Promise.resolve(false);
       return perform(async () => {
         say("Checking whether the pending upload can be canceled…");
@@ -508,7 +522,13 @@
       });
     }
     return { getState: state, load, uploadFiles, change,
-      checkRecovery, cancelRecovery, recoverFile, retry: () => batch?.pending ? perform(sendBatch) : Promise.resolve(false) };
+      checkRecovery, cancelRecovery, recoverFile,
+      preparedJpeg: () => !busy && isCurrent() && batch?.paused ? batch.pending.jpeg : null,
+      sendPrepared: () => batch?.paused ? perform(() => {
+        batch.paused = false;
+        return sendBatch();
+      }) : Promise.resolve(false),
+      retry: () => batch?.pending && !batch.paused ? perform(sendBatch) : Promise.resolve(false) };
   }
 
   window.twCloudRabbitPhotos = { createApi, createJournal, createSession, primaryPhotoUrl, photoDimensions, compressPhoto, mount };
@@ -584,7 +604,7 @@
     close.focus();
   }
 
-  function mount(panel, entry, { onSnapshot, onBusy = () => {} } = {}) {
+  function mount(panel, entry, { onSnapshot, onBusy = () => {}, developmentDiagnostics = false } = {}) {
     const scope = entry.metadata;
     const heading = node("h3", "Cloud photographs");
     const status = node("p", "", "tw-gallery-status");
@@ -614,16 +634,60 @@
     report.style.whiteSpace = "pre-wrap";
     report.style.overflowWrap = "anywhere";
     diagnostics.append(node("summary", "Upload diagnostics"), report);
+    const capture = node("input");
+    capture.type = "checkbox";
+    const captureLabel = node("label", "Pause before upload to save the prepared JPEG (development)");
+    captureLabel.append(capture);
+    const filename = () => `prepared-${session.getState().diagnostic.operationId}.jpg`;
+    const share = button("Share prepared JPEG", async () => {
+      const jpeg = session.preparedJpeg();
+      if (!jpeg) return;
+      const files = [new File([jpeg], filename(), { type: "image/jpeg" })];
+      try {
+        if (!navigator.canShare?.({ files })) throw new Error();
+        await navigator.share({ files });
+      } catch (error) {
+        if (error?.name !== "AbortError") status.textContent = "Use Download prepared JPEG to save a copy.";
+      }
+    });
+    const download = button("Download prepared JPEG", () => {
+      const jpeg = session.preparedJpeg();
+      if (!jpeg) return;
+      const url = URL.createObjectURL(jpeg);
+      const link = node("a");
+      link.href = url;
+      link.download = filename();
+      panel.append(link);
+      link.click();
+      link.remove();
+      setTimeout(() => URL.revokeObjectURL(url), 30_000);
+    });
+    const send = button("Send prepared JPEG", () => session.sendPrepared());
+    const verify = fileControl("Verify saved JPEG", { change: async ([file]) => {
+      const jpeg = session.preparedJpeg();
+      if (!jpeg) return;
+      const expected = session.getState().diagnostic.sha256;
+      try {
+        const matches = file.size === jpeg.size && await photoHash(file) === expected;
+        if (session.preparedJpeg() === jpeg) status.textContent = matches
+          ? "Saved JPEG SHA-256 matches the upload body."
+          : "Saved JPEG differs from the upload body. Try Download prepared JPEG.";
+      } catch {
+        if (session.preparedJpeg() === jpeg) status.textContent = "Could not read the saved JPEG.";
+      }
+    } });
+    if (developmentDiagnostics) diagnostics.append(captureLabel, share, download, verify.label, send);
     panel.className = "tw-gallery tw-cloud-photo-gallery";
     panel.append(heading, status, progress, hero, controls, diagnostics, grid);
     let renderedGallery;
     let lastBusy = false;
     const session = createSession(createApi(scope), {
-      onSnapshot, journal: createJournal(scope), isCurrent: () => panel.isConnected, onChange: draw
+      onSnapshot, journal: createJournal(scope), isCurrent: () => panel.isConnected, onChange: draw,
+      canCapture: () => developmentDiagnostics && capture.checked
     });
     function draw(state) {
       const gallery = state.snapshot?.gallery;
-      const disabled = state.busy || state.reloadRequired || state.retry || state.recovery || !gallery;
+      const disabled = state.busy || state.reloadRequired || state.retry || state.prepared || state.recovery || !gallery;
       if (lastBusy !== state.busy) { lastBusy = state.busy; onBusy(state.busy); }
       status.textContent = state.message;
       progress.hidden = state.progress === null;
@@ -635,7 +699,11 @@
       check.hidden = recover.label.hidden = !state.recovery || state.retry;
       check.disabled = recover.input.disabled = state.busy;
       reload.disabled = state.busy;
-      diagnostics.hidden = !state.diagnostic;
+      diagnostics.hidden = !state.diagnostic && !(developmentDiagnostics && gallery && !state.reloadRequired);
+      captureLabel.hidden = !gallery || state.reloadRequired;
+      capture.disabled = disabled;
+      share.hidden = download.hidden = verify.label.hidden = send.hidden = !state.prepared;
+      share.disabled = download.disabled = verify.input.disabled = send.disabled = state.busy;
       if (state.diagnostic) report.textContent = JSON.stringify(state.diagnostic, null, 2);
       take.input.disabled = choose.input.disabled = disabled || gallery.photos.length >= LIMIT;
       if (renderedGallery !== gallery && gallery) {
