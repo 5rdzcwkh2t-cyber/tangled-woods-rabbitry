@@ -64,3 +64,17 @@ Wrangler is not required for the local suite and was not installed. `.wrangler/`
 
 If the two Access bindings are missing, endpoints fail closed with HTTP 503. Missing, malformed, expired, forged, or incorrectly scoped tokens receive HTTP 401 without token-validation details.
 
+## Versioned rabbit photographs
+
+Stage 4E6A requires development migration `009_versioned_rabbit_photos.sql` and a private development R2 bucket bound as `PHOTOS`. Migration 009 adds an upload ledger and a commit trigger. Existing envelopes and images need no conversion.
+
+`/api/test-rabbit-photos` requires Access and rabbitry membership. All requests take `rabbitryId` and canonical `typedId`. GET returns the current gallery and revision, or JPEG bytes when given `photoId`. POST requires a same-origin request and an owner/admin/editor membership:
+
+- `action=add` or `action=replace`: send a normalized JPEG body, `baseRevision`, and a new UUID v4 `operationId`; replace additionally takes the existing `photoId`. Retry the exact same operation and bytes with the same ID. A committed retry returns the original revision and `replayed: true`. Reload the gallery after a replay or conflict.
+- `action=primary` or `action=remove`: send `baseRevision` and `photoId`; use an empty body.
+- `action=reconcile`: send `operationId` with an empty body and no base revision. The uploader or a rabbitry owner/admin can inspect the receipt and R2 object presence. Expired reservations are marked abandoned; no physical deletion takes place. An abandoned ID cannot be reused.
+
+The JPEG limit is 2 MiB, 2048 pixels per edge, and 4 million pixels. The server checks container boundaries, marker structure, dimensions, scan presence, and the exact end of the JPEG. It rejects EXIF, comments, and trailing data. It does not decode or re-encode pixels, verify every Huffman code or table entry, or detect every corrupt image that a browser may fail to decode. Clients should apply orientation and re-encode before upload. Images are served with a fixed JPEG media type and filename, no MIME sniffing, a sandboxed document policy, and same-origin resource protection.
+
+Database and object backups must be coordinated. For inventory or cleanup, preserve all objects referenced by retained revisions, including tombstones. Abandoned ledger entries are tracked and require an explicit retention and cleanup policy before physical deletion.
+

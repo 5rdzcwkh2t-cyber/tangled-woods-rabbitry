@@ -14,6 +14,7 @@ const WRITE_ROLES = new Set(["owner", "admin", "editor"]);
 const ALLOWED_ROLES = new Set([...WRITE_ROLES, "viewer"]);
 const MAX_REQUEST_BYTES = 300 * 1024;
 const parentRoles = { Father: "buck", Mother: "doe" };
+export const PHOTO_GALLERY_FIELD = "cloudPhotoGalleryV1";
 
 const reply = (body, status = 200) =>
   Response.json(body, { status, headers: { "Cache-Control": "no-store" } });
@@ -28,7 +29,7 @@ function uniquenessConflict(error) {
     /rabbit_record_versions/i.test(message);
 }
 
-async function authenticate(request, env) {
+export async function authenticate(request, env) {
   const result = await verifyAccessJwt(request, env);
   if (!result.ok) {
     return { error: result.reason === "configuration"
@@ -42,7 +43,7 @@ async function authenticate(request, env) {
   return { subject };
 }
 
-async function authorize(env, rabbitryId, subject) {
+export async function authorize(env, rabbitryId, subject, write = true) {
   const invalidEnvironment = await requireTestEnvironment(env);
   if (invalidEnvironment) return { error: invalidEnvironment };
   const membership = await env.DB.prepare(
@@ -55,7 +56,7 @@ async function authorize(env, rabbitryId, subject) {
   if (!membership || !ALLOWED_ROLES.has(membership.role)) {
     return { error: reply({ error: "Rabbitry not found" }, 404) };
   }
-  if (!WRITE_ROLES.has(membership.role)) {
+  if (write && !WRITE_ROLES.has(membership.role)) {
     return { error: reply({ error: "Rabbitry write access denied" }, 403) };
   }
   return { role: membership.role };
@@ -132,6 +133,7 @@ async function requestBody(request, mode) {
   let record;
   try {
     record = validateRabbitRecord(body.record);
+    if (creating && Object.hasOwn(record, PHOTO_GALLERY_FIELD)) throw new TypeError();
     if (mode === "create-kit") validateTypedRelationshipId(body.litterTypedId, "litterTypedId");
     if (creating && kitLinkFields.some(field => Object.hasOwn(record, field))) throw new TypeError();
     if (Object.hasOwn(body, "parentChanges")) {
@@ -202,7 +204,7 @@ function pedigreeWriteError(error) {
   return null;
 }
 
-function preparedVersion(record, revision, createdAt, updatedAt) {
+export function preparedVersion(record, revision, createdAt, updatedAt) {
   const typedId = encodeRabbitId(record._id);
   const envelope = validateRabbitEnvelope(createRabbitEnvelope({
     id: record._id,
@@ -244,7 +246,7 @@ async function insertCreate(env, rabbitryId, version) {
   ).run();
 }
 
-function validateStoredLatest(row) {
+export function validateStoredLatest(row) {
   let envelope;
   let decoded;
   try {
@@ -261,7 +263,7 @@ function validateStoredLatest(row) {
   return envelope;
 }
 
-async function latestRow(env, rabbitryId, typedId) {
+export async function latestRow(env, rabbitryId, typedId) {
   return env.DB.prepare(
     `SELECT typed_id, revision, schema_version, created_at, updated_at, deleted_at, envelope
      FROM rabbit_record_versions
@@ -270,7 +272,7 @@ async function latestRow(env, rabbitryId, typedId) {
   ).bind(rabbitryId, typedId).first();
 }
 
-async function insertUpdate(env, rabbitryId, baseRevision, version) {
+export async function insertUpdate(env, rabbitryId, baseRevision, version, photoWrite) {
   const { envelope, projections, typedId } = version;
   return env.DB.prepare(
     `INSERT INTO rabbit_record_versions
@@ -286,12 +288,24 @@ async function insertUpdate(env, rabbitryId, baseRevision, version) {
            WHERE latest.rabbitry_id = current.rabbitry_id
              AND latest.typed_id = current.typed_id
          )
-     )`
+     )
+     ${photoWrite ? `AND EXISTS (
+       SELECT 1 FROM rabbitry_memberships m JOIN rabbitries r ON r.id = m.rabbitry_id
+       WHERE m.rabbitry_id = ? AND m.access_subject = ? AND m.revoked_at IS NULL
+         AND r.deleted_at IS NULL AND m.role IN ('owner','admin','editor')
+     )` : ""}
+     ${photoWrite?.uploadId ? `AND EXISTS (
+       SELECT 1 FROM rabbit_photo_uploads u WHERE u.rabbitry_id = ? AND u.rabbit_typed_id = ?
+         AND u.photo_id = ? AND u.base_revision = ? AND u.state = 'reserved'
+         AND julianday(u.expires_at) > julianday('now')
+     )` : ""}`
   ).bind(
     rabbitryId, typedId, envelope.revision, envelope.schemaVersion,
     envelope.createdAt, envelope.updatedAt,
     projections.name, projections.sex, projections.birthDate, JSON.stringify(envelope),
-    rabbitryId, typedId, baseRevision
+    rabbitryId, typedId, baseRevision,
+    ...(photoWrite ? [rabbitryId, photoWrite.subject] : []),
+    ...(photoWrite?.uploadId ? [rabbitryId, typedId, photoWrite.uploadId, baseRevision] : [])
   ).run();
 }
 
@@ -387,6 +401,11 @@ export async function handleVersionedRabbitWrite({ request, env }, mode) {
 
     const timestamp = new Date().toISOString();
     if (mode === "update") {
+      if (Object.hasOwn(previous.record, PHOTO_GALLERY_FIELD)) {
+        input.record[PHOTO_GALLERY_FIELD] = previous.record[PHOTO_GALLERY_FIELD];
+      } else {
+        delete input.record[PHOTO_GALLERY_FIELD];
+      }
       const immutable = Object.hasOwn(previous.record, "litterTypedId") ? kitSnapshotFields : kitLinkFields;
       if (immutable.some(field => !Object.is(input.record[field], previous.record[field]))) {
         return reply({ error: "Kit relationships cannot be changed" }, 400);

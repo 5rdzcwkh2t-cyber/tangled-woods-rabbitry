@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { randomUUID } from "node:crypto";
+import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 import { onRequestPost as createLitter } from "../functions/api/test-create-versioned-litter.js";
@@ -10,6 +12,8 @@ import { onRequestPost as updateLitter } from "../functions/api/test-update-vers
 import { onRequestPost as deleteLitter } from "../functions/api/test-delete-versioned-litter.js";
 import { onRequestGet as readLitters } from "../functions/api/test-versioned-litters.js";
 import { onRequestPost as deleteBreeding } from "../functions/api/test-delete-versioned-breeding.js";
+import { onRequestPost as writePhoto } from "../functions/api/test-rabbit-photos.js";
+import { onRequestGet as readRabbit } from "../functions/api/test-versioned-rabbits.js";
 import { createBreedingEnvelope } from "../breeding-litter-contracts.js";
 import { createRabbitEnvelope, deriveRabbitProjections } from "../rabbit-record-contract.js";
 import { encodeRabbitId } from "../rabbit-typed-id.js";
@@ -76,6 +80,38 @@ async function create(f, record = draft()) {
 function kitRequest(f, litterTypedId, record = { _id: "kit-1", Name: "Kit" }, rabbitryId = "woods") {
   return post("test-create-versioned-kit", f.accessToken, { rabbitryId, litterTypedId, record });
 }
+
+test("a kit photo revision preserves inherited parents and the pedigree read model", async t => {
+  const f = await createTestDatabase();
+  t.after(f.close);
+  setup(f.database);
+  const { litter } = await json(await create(f), 201);
+  const { rabbit } = await json(await createKit({ request: kitRequest(f, litter.typedId), env: f.env }), 201);
+  f.env.PHOTOS = { async put(_, bytes, options) {
+    return { size: bytes.length, customMetadata: options.customMetadata };
+  } };
+  const headers = { "Cf-Access-Jwt-Assertion": f.accessToken };
+  const scope = new URLSearchParams({ rabbitryId: "woods", typedId: rabbit.typedId });
+  const pedigree = () => readRabbit({ env: f.env, request: new Request(
+    `${origin}/api/test-versioned-rabbits?${scope}&generations=5`, { headers }
+  ) }).then(r => json(r, 200));
+  const before = await pedigree();
+  const body = await readFile(new URL("../tangled-woods-logo.jpg", import.meta.url));
+  const params = new URLSearchParams(scope);
+  params.set("action", "add");
+  params.set("baseRevision", "0");
+  params.set("operationId", randomUUID());
+  await json(await writePhoto({ env: f.env, request: new Request(`${origin}/api/test-rabbit-photos?${params}`, {
+    method: "POST", headers: { ...headers, Origin: origin, "Content-Type": "image/jpeg" }, body
+  }) }), 200);
+  assert.deepEqual(await pedigree(), before);
+  const latest = f.database.prepare(
+    "SELECT envelope FROM rabbit_record_versions WHERE rabbitry_id='woods' AND typed_id=? ORDER BY revision DESC LIMIT 1"
+  ).get(rabbit.typedId);
+  const { cloudPhotoGalleryV1, ...record } = JSON.parse(latest.envelope).record;
+  assert.equal(cloudPhotoGalleryV1.photos.length, 1);
+  assert.deepEqual(record, rabbit.envelope.record);
+});
 
 test("kits inherit snapshots, accept Unknown, retain profile fields and protect their litter until tombstoned", async t => {
   const f = await createTestDatabase(); t.after(() => f.close()); setup(f.database);

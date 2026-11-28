@@ -20,5 +20,9 @@
     "TEST_DATABASE": "tangled-woods-dev-v2",
     "CLOUDFLARE_ACCESS_TEAM_DOMAIN": "REPLACE_WITH_PREVIEW_ACCESS_TEAM_DOMAIN",
     "CLOUDFLARE_ACCESS_AUD": "REPLACE_WITH_PREVIEW_ACCESS_AUDIENCE"
-  }
+  },
+  // Development/Preview only. Keep the bucket private.
+  "r2_buckets": [
+    { "binding": "PHOTOS", "bucket_name": "tangled-woods-photos-test" }
+  ]
 }
