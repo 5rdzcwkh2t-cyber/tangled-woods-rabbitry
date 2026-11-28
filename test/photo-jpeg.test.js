@@ -73,3 +73,23 @@ test("JPEG inspector distinguishes table and scan failures", () => {
   rejected(shortTable, "jpeg_table");
   rejected(jpeg({ scans: [...segment(0xda, [0, 1, 0, 0, 63, 0]), 0x3f] }), "jpeg_scan");
 });
+
+test("JPEG marker diagnostics distinguish every rejection branch without segment contents", () => {
+  const cases = [
+    [[0x01, 0x02], { reason: "missing_soi" }],
+    [[0xff, 0xd8, 0x41], { reason: "missing_marker_prefix" }],
+    [[0xff, 0xd8, 0xff, 0xff], { reason: "missing_marker_code" }],
+    [[0xff, 0xd8, 0xff, 0xe1, 0], { reason: "truncated_segment_length", marker: "FFE1" }],
+    [[0xff, 0xd8, 0xff, 0xe1, 0, 1], { reason: "invalid_segment_length", marker: "FFE1" }],
+    [[0xff, 0xd8, 0xff, 0xe1, 0, 8, 0x41], { reason: "segment_past_end", marker: "FFE1" }],
+    [jpeg({ metadata: segment(0xfe, [0x41, 0x42]) }), { reason: "disallowed_marker", marker: "FFFE" }]
+  ];
+  for (const [bytes, detail] of cases) {
+    assert.throws(() => inspectJpeg(Uint8Array.from(bytes)), error => {
+      assert.equal(error.status, 415);
+      assert.equal(error.code, "jpeg_marker");
+      assert.deepEqual(error.detail, detail);
+      return true;
+    });
+  }
+});

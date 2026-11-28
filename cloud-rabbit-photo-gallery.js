@@ -70,12 +70,20 @@
     if (response.status !== 200) {
       const error = requestError(response.status, "http");
       try {
-        const { outcome, code } = JSON.parse(response.text) || {};
+        const { outcome, code, detail } = JSON.parse(response.text) || {};
         if (([400, 413, 415].includes(response.status) && outcome === "rejected") ||
             (response.status === 409 && outcome === "abandoned")) error.outcome = outcome;
         if (response.status === 415 && error.outcome === "rejected" &&
             ["jpeg_mime", "jpeg_frame", "jpeg_marker", "jpeg_table", "jpeg_scan", "jpeg_dimension", "jpeg_eoi"].includes(code)) {
           error.rejectionCode = code;
+          if (code === "jpeg_marker" && ["missing_soi", "missing_marker_prefix", "missing_marker_code",
+            "truncated_segment_length", "invalid_segment_length", "segment_past_end", "disallowed_marker"].includes(detail?.reason)) {
+            error.rejectionDetail = {
+              reason: detail.reason,
+              ...(typeof detail.marker === "string" && /^FF(?!00|FF)[0-9A-F]{2}$/.test(detail.marker)
+                ? { marker: detail.marker } : {})
+            };
+          }
         }
       } catch { /* A proxy error can be an HTML response. */ }
       throw error;
@@ -390,6 +398,7 @@
             ? (["transport", "timeout", "aborted"].includes(error.networkError) ? error.networkError : "transport") : null;
           report({ httpStatus: error?.httpStatus ?? (error?.status || null), networkError,
             ...(error?.rejectionCode ? { rejectionCode: error.rejectionCode } : {}),
+            ...(error?.rejectionDetail ? { rejectionDetail: error.rejectionDetail } : {}),
             outcome: abandoned ? "abandoned" : rejected ? "rejected" : uncertain ? "uncertain" : "not-sent" });
         }
         const retry = uncertain && !reloadRequired &&

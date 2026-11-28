@@ -133,7 +133,11 @@ test("authorization, environment, scoped object access and actual upload limits 
   assert.equal((await f.post(add, { body: Buffer.from("<svg><script>alert(1)</script></svg>") })).status, 415);
   assert.equal((await f.post(add, { body: jpeg.subarray(0, jpeg.length - 2) })).status, 415);
   assert.equal((await f.post(add, { body: Buffer.concat([jpeg, Buffer.from("payload")]) })).status, 415);
-  assert.equal((await f.post(add, { body: Buffer.concat([jpeg.subarray(0, 2), Buffer.from([255, 225, 0, 2]), jpeg.subarray(2)]) })).status, 415);
+  const app1 = await json(await f.post(add, {
+    body: Buffer.concat([jpeg.subarray(0, 2), Buffer.from([255, 225, 0, 2]), jpeg.subarray(2)])
+  }), 415);
+  assert.equal(app1.code, "jpeg_marker");
+  assert.deepEqual(app1.detail, { reason: "disallowed_marker", marker: "FFE1" });
   const oversizedDimensions = Buffer.from(jpeg);
   const frame = oversizedDimensions.indexOf(Buffer.from([255, 192]));
   assert.notEqual(frame, -1);

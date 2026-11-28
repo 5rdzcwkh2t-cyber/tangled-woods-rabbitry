@@ -482,7 +482,8 @@ test("development capture pauses before persistence or upload and sends the same
     upload: async (url, body) => {
       sent = body;
       return { status: 415, url: origin + url,
-        text: '{"outcome":"rejected","code":"jpeg_marker","error":"private detail"}' };
+        text: JSON.stringify({ outcome: "rejected", code: "jpeg_marker", error: "private detail",
+          detail: { reason: "disallowed_marker", marker: "FFE1", payload: "private metadata" } }) };
     }
   });
   const session = createSession(api, { journal, canCapture: () => true,
@@ -501,5 +502,6 @@ test("development capture pauses before persistence or upload and sends the same
   assert.equal(session.preparedJpeg(), null);
   assert.equal(journal.list().length, 0);
   assert.equal(session.getState().diagnostic.rejectionCode, "jpeg_marker");
-  assert.doesNotMatch(JSON.stringify(session.getState()), /private detail/);
+  assert.deepEqual({ ...session.getState().diagnostic.rejectionDetail }, { reason: "disallowed_marker", marker: "FFE1" });
+  assert.doesNotMatch(JSON.stringify(session.getState()), /private detail|private metadata/);
 });
