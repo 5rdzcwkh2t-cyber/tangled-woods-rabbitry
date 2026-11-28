@@ -9,12 +9,14 @@ const origin = "https://preview.test";
 const scope = { rabbitryId: "dev-auth-test", typedId: 's:"Rabbit / 7"' };
 const id = index => `00000000-0000-4000-8000-${String(index).padStart(12, "0")}`;
 const jpeg = new Blob(["normalized fixture"], { type: "image/jpeg" });
+const canvasJpeg = new Blob([await readFile(new URL("../tangled-woods-logo.jpg", import.meta.url))],
+  { type: "image/jpeg" });
 const gallery = (ids = [], primaryId = ids[0] ?? null) => ({ primaryId, photos: ids.map(id => ({ id })) });
 const result = (revision, ids = [], primaryId) => ({ revision, gallery: gallery(ids, primaryId) });
 const failure = (status, category = "http") => Object.assign(new Error(category), { status, category });
 
 function load(extra = {}) {
-  const context = { window: {}, URL, URLSearchParams, location: { origin }, ...extra };
+  const context = { window: {}, Blob, URL, URLSearchParams, location: { origin }, ...extra };
   vm.runInNewContext(source, context);
   return context.window.twCloudRabbitPhotos;
 }
@@ -77,24 +79,67 @@ test("photo client treats an Access redirect, stale write, and invalid successfu
 test("compression draws an oriented decoded image onto a fresh 900-pixel JPEG canvas", async () => {
   const events = [];
   const bitmap = { width: 1600, height: 2400, close: () => events.push("closed") };
+  const encodedWithApp1 = new Blob([canvasJpeg.slice(0, 2), Uint8Array.of(0xff, 0xe1, 0, 4, 1, 2),
+    canvasJpeg.slice(2)], { type: "image/jpeg" });
   const canvas = {
     getContext: () => ({
       fillRect: (...args) => events.push(["fill", ...args]),
       drawImage: (...args) => events.push(["draw", ...args])
     }),
-    toBlob: (callback, type, quality) => { events.push(["encode", type, quality]); callback(jpeg); }
+    toBlob: (callback, type, quality) => { events.push(["encode", type, quality]); callback(encodedWithApp1); }
   };
   const { compressPhoto, photoDimensions } = load({
     createImageBitmap: async (_, options) => { events.push(options.imageOrientation); return bitmap; },
     document: { createElement: tag => { assert.equal(tag, "canvas"); return canvas; } }
   });
-  assert.equal(await compressPhoto(jpeg), jpeg);
+  assert.deepEqual(await (await compressPhoto(jpeg)).arrayBuffer(), await canvasJpeg.arrayBuffer());
   assert.deepEqual([canvas.width, canvas.height], [600, 900]);
   assert.deepEqual(events, ["from-image", ["fill", 0, 0, 600, 900], ["draw", bitmap, 0, 0, 600, 900],
     ["encode", "image/jpeg", 0.78], "closed"]);
   assert.equal(photoDimensions(320, 100).width, 320);
   assert.throws(() => photoDimensions(10000, 10000), /too large/);
   await assert.rejects(compressPhoto(new Blob(["abc"], { type: "image/svg+xml" })), { category: "file" });
+});
+
+test("APP1 normalization removes one or multiple segments while preserving every other byte", async () => {
+  const { stripCanvasApp1 } = load();
+  assert.equal(await stripCanvasApp1(canvasJpeg), canvasJpeg);
+  const bytes = new Uint8Array(await canvasJpeg.arrayBuffer());
+  const app1 = [0xff, 0xe1, 0, 6, 0xff, 0xd9, 0xff, 0xda];
+  for (const metadata of [app1, [...app1, ...app1]]) {
+    const encoded = new Blob([bytes.subarray(0, 2), Uint8Array.from(metadata), bytes.subarray(2)], { type: "image/jpeg" });
+    const normalized = await stripCanvasApp1(encoded);
+    assert.equal(normalized.type, "image/jpeg");
+    assert.deepEqual(new Uint8Array(await normalized.arrayBuffer()), bytes);
+  }
+});
+
+test("progressive APP1 normalization preserves scan stuffing, restart markers and color segments", async () => {
+  const { stripCanvasApp1 } = load();
+  // Marker-walking fixture. Entropy bytes are synthetic, not a decodable image.
+  const header = [0xff, 0xd8, 0xff, 0xe2, 0, 3, 0x49, 0xff, 0xee, 0, 3, 0x41,
+    0xff, 0xc2, 0, 11, 8, 0, 8, 0, 8, 1, 1, 0x11, 0];
+  const firstScan = [0xff, 0xda, 0, 8, 1, 1, 0, 0, 0, 0, 0xff, 0, 0xe1, 0xff, 0xd0, 0x43];
+  const secondScan = [0xff, 0xda, 0, 8, 1, 1, 0, 1, 63, 0, 0x7f, 0xff, 0xd9];
+  const app1 = [0xff, 0xe1, 0, 4, 0x11, 0x22];
+  const encoded = new Blob([Uint8Array.from([...header, ...firstScan, ...app1, ...secondScan])], { type: "image/jpeg" });
+  assert.deepEqual(new Uint8Array(await (await stripCanvasApp1(encoded)).arrayBuffer()),
+    Uint8Array.from([...header, ...firstScan, ...secondScan]));
+});
+
+test("APP1 normalization rejects malformed lengths, marker boundaries and missing or trailing EOI", async () => {
+  const { stripCanvasApp1 } = load();
+  const bytes = new Uint8Array(await canvasJpeg.arrayBuffer());
+  for (const invalid of [
+    [0xff, 0xd8, 0xff, 0xe1, 0, 1],
+    [0xff, 0xd8, 0xff, 0xe1, 0],
+    [0xff, 0xd8, 0xff, 0xe1, 0, 8, 0xff, 0xd9],
+    [0xff, 0xd8, 0x11, 0xff, 0xd9],
+    bytes.subarray(0, -2),
+    [...bytes, 0]
+  ]) {
+    await assert.rejects(stripCanvasApp1(new Blob([Uint8Array.from(invalid)])), { category: "file" });
+  }
 });
 
 test("multiple uploads run sequentially and duplicate submission cannot start a second batch", async () => {
@@ -360,7 +405,7 @@ test("the image-element decoder revokes temporary object URLs on success and fai
   }
   const canvas = {
     getContext: () => ({ fillRect() {}, drawImage() {} }),
-    toBlob: done => done(jpeg)
+    toBlob: done => done(canvasJpeg)
   };
   const { compressPhoto } = load({
     Image, URL: { createObjectURL: () => "blob:temporary", revokeObjectURL: url => events.push("revoked " + url) },

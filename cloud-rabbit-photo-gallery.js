@@ -208,6 +208,57 @@
     }
   }
 
+  async function stripCanvasApp1(jpeg) {
+    const bytes = new Uint8Array(await jpeg.arrayBuffer());
+    const invalid = () => { throw requestError(0, "file", "The prepared JPEG has invalid segment boundaries."); };
+    if (bytes[0] !== 0xff || bytes[1] !== 0xd8) invalid();
+    let offset = 2;
+    let keptFrom = 0;
+    let sawScan = false;
+    const parts = [];
+    while (offset < bytes.length) {
+      const start = offset;
+      if (bytes[offset++] !== 0xff) invalid();
+      while (bytes[offset] === 0xff) offset++;
+      const marker = bytes[offset++];
+      if (marker === 0xd9) {
+        if (!sawScan || offset !== bytes.length) invalid();
+        if (!parts.length) return jpeg;
+        parts.push(bytes.subarray(keptFrom));
+        return new Blob(parts, { type: "image/jpeg" });
+      }
+      // SOI, stuffing, and restart markers are not length-prefixed segments.
+      if (marker === 0xd8 || marker === 0 || (marker >= 0xd0 && marker <= 0xd7) ||
+          marker === 1 || offset + 2 > bytes.length) invalid();
+      const length = (bytes[offset] << 8) | bytes[offset + 1];
+      const end = offset + length;
+      if (length < 2 || end > bytes.length) invalid();
+      if (marker === 0xe1) {
+        // Keep any marker fill bytes. Drop only the APP1 marker and its segment.
+        parts.push(bytes.subarray(keptFrom, offset - 2));
+        keptFrom = end;
+      }
+      offset = end;
+      if (marker !== 0xda) continue;
+      const scanStart = offset;
+      while (offset < bytes.length) {
+        if (bytes[offset++] !== 0xff) continue;
+        const prefix = offset - 1;
+        while (bytes[offset] === 0xff) offset++;
+        const next = bytes[offset];
+        if (next === 0 || (next >= 0xd0 && next <= 0xd7)) {
+          offset++;
+          continue;
+        }
+        offset = prefix;
+        break;
+      }
+      if (offset === scanStart) invalid();
+      sawScan = true;
+    }
+    invalid();
+  }
+
   async function compressPhoto(file, report = () => {}) {
     if (!file.size || file.size > 20 * 1024 * 1024 || file.type === "image/svg+xml" ||
         (file.type && !file.type.startsWith("image/"))) {
@@ -226,11 +277,13 @@
       context.fillStyle = "#fff";
       context.fillRect(0, 0, width, height);
       context.drawImage(decoded.image, 0, 0, width, height);
-      // Canvas re-encoding writes a new JPEG without copying source EXIF or GPS metadata.
-      const jpeg = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.78));
-      if (!jpeg || jpeg.type !== "image/jpeg" || !jpeg.size || jpeg.size > MAX_UPLOAD) {
+      // The decoder applies source orientation before drawing. Canvas encoders
+      // can still emit their own APP1 segments in the newly encoded JPEG.
+      const encoded = await new Promise(resolve => canvas.toBlob(resolve, "image/jpeg", 0.78));
+      if (!encoded || encoded.type !== "image/jpeg" || !encoded.size || encoded.size > MAX_UPLOAD) {
         throw requestError(0, "file", "Could not create a JPEG within the upload limit.");
       }
+      const jpeg = await stripCanvasApp1(encoded);
       report({ stage: "encoded", bytes: jpeg.size });
       return jpeg;
     } finally { decoded.close(); }
@@ -540,7 +593,8 @@
       retry: () => batch?.pending && !batch.paused ? perform(sendBatch) : Promise.resolve(false) };
   }
 
-  window.twCloudRabbitPhotos = { createApi, createJournal, createSession, primaryPhotoUrl, photoDimensions, compressPhoto, mount };
+  window.twCloudRabbitPhotos = { createApi, createJournal, createSession, primaryPhotoUrl, photoDimensions,
+    compressPhoto, stripCanvasApp1, mount };
 
   function node(tag, text, className) {
     const element = document.createElement(tag);
