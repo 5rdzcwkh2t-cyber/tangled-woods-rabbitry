@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
+import { readFile } from "node:fs/promises";
 
 import { onRequestPost as createRabbit } from "../functions/api/test-create-versioned-rabbit.js";
 import { onRequestPost as updateRabbit } from "../functions/api/test-update-versioned-rabbit.js";
@@ -78,6 +79,128 @@ function storedRows(database, rabbitryId, id) {
     WHERE rabbitry_id = ? AND typed_id = ? ORDER BY revision
   `).all(rabbitryId, encodeRabbitId(id));
 }
+
+async function pedigreeFixture(t, options) {
+  const fixture = await createTestDatabase(options);
+  t.after(() => fixture.close());
+  for (const id of ["woods-a", "woods-b"]) {
+    addRabbitry(fixture.database, id);
+    addMembership(fixture.database, id, "integration-test-user", "editor");
+  }
+  const write = (handler, body, rabbitryId = "woods-a") => handler({
+    request: post("pedigree-test", fixture.accessToken, { rabbitryId, ...body }), env: fixture.env
+  });
+  const create = (record, parentChanges, rabbitryId) => write(createRabbit, { record, parentChanges }, rabbitryId);
+  const update = (record, baseRevision, parentChanges) => write(updateRabbit, { record, baseRevision, parentChanges });
+  const remove = (id, baseRevision) => write(deleteRabbit, { typedId: encodeRabbitId(id), baseRevision });
+  return { ...fixture, create, update, remove };
+}
+
+test("parent assignments snapshot names, preserve text-only ancestors, and can be corrected or cleared", async t => {
+  const { create, update, remove, database } = await pedigreeFixture(t);
+  const sire = record(7, "Old sire", { Sex: "Buck" });
+  const replacement = record("7", "Other sire", { Sex: "Buck" });
+  await json(await create(sire), 201);
+  await json(await create(replacement), 201);
+  const child = record("child", "Child", { Father: "Client supplied", Mother: "Historical dam" });
+  const created = await json(await create(child, { Father: encodeRabbitId(7) }), 201);
+  const linked = created.rabbit.envelope.record;
+  assert.equal(linked.Father, "Old sire");
+  assert.equal(linked.Mother, "Historical dam");
+  await json(await update({ ...sire, Name: "Renamed sire", Archived: true }, 0), 200);
+  await json(await remove(7, 1), 200);
+  const unchanged = await json(await update({ ...linked, Father: "Spoofed" }, 0), 200);
+  assert.equal(unchanged.rabbit.envelope.record.Father, "Old sire");
+  await json(await update(linked, 0, { Father: null }), 409);
+  const corrected = await json(await update(linked, 1, { Father: encodeRabbitId("7") }), 200);
+  assert.equal(corrected.rabbit.envelope.record.Father, "Other sire");
+  const cleared = await json(await update(corrected.rabbit.envelope.record, 2, { Father: null }), 200);
+  assert.equal(cleared.rabbit.envelope.record.FatherTypedId, undefined);
+  assert.equal(cleared.rabbit.envelope.record.Father, undefined);
+  assert.equal(cleared.rabbit.envelope.record.Mother, "Historical dam");
+  assert.equal(storedRows(database, "woods-a", "child").length, 4);
+});
+
+test("new parent links reject malformed, out-of-scope, wrong-sex, archived, deleted and self IDs", async t => {
+  const { create, remove, database } = await pedigreeFixture(t);
+  const buck = (id, extra) => record(id, id, { Sex: "Buck", ...extra });
+  await json(await create(buck("foreign"), undefined, "woods-b"), 201);
+  await json(await create(buck("archived", { Archived: true })), 201);
+  await json(await create(buck("deleted")), 201);
+  await json(await remove("deleted", 0), 200);
+  await json(await create(record("doe")), 201);
+  for (const id of ["foreign", "archived", "deleted", "doe", "missing", "child"].map(encodeRabbitId).concat("s:malformed")) {
+    await json(await create(buck("child"), { Father: id }), 400);
+  }
+  assert.deepEqual(storedRows(database, "woods-a", "child"), []);
+});
+
+test("reciprocal concurrent assignments cannot both commit and longer cycles are rejected", async t => {
+  const { create, update, database } = await pedigreeFixture(t);
+  const a = record("a", "A", { Sex: "Buck" });
+  const b = record("b", "B", { Sex: "Buck" });
+  await json(await create(a), 201);
+  await json(await create(b), 201);
+  const responses = await Promise.all([
+    update(a, 0, { Father: encodeRabbitId("b") }),
+    update(b, 0, { Father: encodeRabbitId("a") })
+  ]);
+  assert.deepEqual(responses.map(response => response.status).sort(), [200, 409]);
+  const [child, ancestor] = responses[0].ok ? [a, b] : [b, a];
+  const c = record("c", "C");
+  await json(await create(c, { Father: encodeRabbitId(child._id) }), 201);
+  const result = await json(await update(ancestor, 0, { Mother: encodeRabbitId("c") }), 409);
+  assert.match(result.error, /ancestry cycle/);
+  assert.equal(storedRows(database, "woods-a", ancestor._id).length, 1);
+});
+
+test("migration 008 projects old envelopes without rewriting rows and guards old-style inserts", async t => {
+  const { database, create } = await pedigreeFixture(t, { through: 7 });
+  const parent = record("p", "Sire", { Sex: "Buck" });
+  await json(await create(parent), 201);
+  const historical = record("old", "Old", { FatherTypedId: encodeRabbitId("p"), Father: "Original sire", Mother: "Text dam" });
+  const envelope = (record, revision) => createRabbitEnvelope({ id: record._id, revision, createdAt: now, updatedAt: now, record });
+  seedVersion(database, "woods-a", envelope(historical, 0));
+  const before = storedRows(database, "woods-a", "old");
+  await json(await create(record("new"), { Father: encodeRabbitId("p") }), 503);
+  database.exec(await readFile(new URL("../migrations/008_versioned_rabbit_pedigrees.sql", import.meta.url), "utf8"));
+  assert.deepEqual(storedRows(database, "woods-a", "old"), before);
+  const row = database.prepare("SELECT father_typed_id, father_name_snapshot, mother_name_snapshot FROM rabbit_record_versions WHERE typed_id = ?").get(encodeRabbitId("old"));
+  assert.deepEqual({ ...row }, { father_typed_id: encodeRabbitId("p"), father_name_snapshot: "Original sire", mother_name_snapshot: "Text dam" });
+  assert.equal(database.prepare("SELECT COUNT(*) AS count FROM sqlite_master WHERE type = 'index' AND name IN ('idx_rabbit_versions_father', 'idx_rabbit_versions_mother')").get().count, 2);
+  assert.throws(() => seedVersion(database, "woods-a", envelope({ ...historical, Father: "Overwritten" }, 1)), /rabbit_pedigree_changed/);
+  seedVersion(database, "woods-a", envelope({ ...historical, Notes: "Old handler profile edit" }, 1));
+});
+
+test("the insert rejects a parent archived after the API validates it", async t => {
+  const { create, update, env, database } = await pedigreeFixture(t);
+  const sire = record("sire", "Sire", { Sex: "Buck" });
+  await json(await create(sire), 201);
+  const original = env.DB;
+  let intercepted = false;
+  env.DB = {
+    prepare(sql) {
+      const prepared = original.prepare(sql);
+      if (intercepted || !sql.includes("INSERT INTO rabbit_record_versions")) return prepared;
+      return {
+        bind(...values) {
+          const bound = prepared.bind(...values);
+          return {
+            async run() {
+              intercepted = true;
+              await json(await update({ ...sire, Archived: true }, 0), 200);
+              return bound.run();
+            }
+          };
+        }
+      };
+    }
+  };
+  const response = await json(await create(record("child"), { Father: encodeRabbitId("sire") }), 409);
+  assert.match(response.error, /Parent selection changed/);
+  assert.equal(intercepted, true);
+  assert.deepEqual(storedRows(database, "woods-a", "child"), []);
+});
 
 test("create preserves unknown fields and keeps numeric and string IDs distinct", async (t) => {
   const fixture = await createTestDatabase();

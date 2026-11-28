@@ -47,12 +47,12 @@ class D1DatabaseAdapter {
   }
 }
 
-export async function createTestDatabase() {
+export async function createTestDatabase({ through = Infinity } = {}) {
   const database = new DatabaseSync(":memory:");
   database.exec("PRAGMA foreign_keys = ON");
 
   const migrations = (await readdir(migrationsDirectory))
-    .filter((name) => /^\d+.*\.sql$/.test(name))
+    .filter((name) => /^\d+.*\.sql$/.test(name) && Number.parseInt(name, 10) <= through)
     .sort();
 
   for (const migration of migrations) {

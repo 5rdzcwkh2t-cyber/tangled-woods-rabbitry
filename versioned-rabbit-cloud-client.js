@@ -130,7 +130,7 @@
     return createRecord(options, options.litterTypedId);
   }
 
-  async function createRecord({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, record } = {}, litterTypedId) {
+  async function createRecord({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, record, parentChanges } = {}, litterTypedId) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");
     if (typeof rabbitryId !== "string" || !rabbitryId.trim()) throw new TypeError("rabbitryId is required");
     if (!isObject(record) || !Object.hasOwn(record, "_id")) throw new TypeError("record is required");
@@ -145,7 +145,7 @@
           Accept: "application/json",
           "Content-Type": "application/json"
         },
-        body: JSON.stringify({ rabbitryId, ...(litterTypedId ? { litterTypedId } : {}), record: clone(record) })
+        body: JSON.stringify({ rabbitryId, ...(litterTypedId ? { litterTypedId } : { parentChanges }), record: clone(record) })
       });
     } catch (cause) {
       throw new CloudRabbitError("Network request failed", { category: "network", offline: true, cause });
@@ -177,7 +177,7 @@
     return created;
   }
 
-  async function updateRabbit({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, baseRevision, record } = {}) {
+  async function updateRabbit({ fetchImpl, rabbitryId = DEFAULT_RABBITRY_ID, baseRevision, record, parentChanges } = {}) {
     if (typeof fetchImpl !== "function") throw new TypeError("fetchImpl is required");
     if (typeof rabbitryId !== "string" || !rabbitryId.trim()) throw new TypeError("rabbitryId is required");
     if (!Number.isSafeInteger(baseRevision) || baseRevision < 0) throw new TypeError("baseRevision is required");
@@ -187,7 +187,7 @@
       response = await fetchImpl(UPDATE_API, {
         method: "POST", credentials: "same-origin", cache: "no-store",
         headers: { Accept: "application/json", "Content-Type": "application/json" },
-        body: JSON.stringify({ rabbitryId, baseRevision, record: clone(record) })
+        body: JSON.stringify({ rabbitryId, baseRevision, record: clone(record), parentChanges })
       });
     } catch (cause) {
       throw new CloudRabbitError("Network request failed", { category: "network", offline: true, cause });

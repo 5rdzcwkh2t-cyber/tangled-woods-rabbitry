@@ -104,6 +104,10 @@ test("kits inherit snapshots, accept Unknown, retain profile fields and protect 
   for (const field of ["litterTypedId", "FatherTypedId", "MotherTypedId", "Father", "Mother"]) {
     assert.equal((await update({ ...record, [field]: "changed" })).status, 400);
   }
+  assert.equal((await updateRabbit({ env: f.env, request: post(
+    "test-update-versioned-rabbit", f.accessToken,
+    { rabbitryId: "woods", baseRevision: 0, record, parentChanges: { Father: null } }
+  ) })).status, 400);
   const revised = await json(await update({ ...record, Archived: true,
     kitMilestones: { weaned: "2027-01-02" } }), 200);
   assert.deepEqual(revised.rabbit.envelope.record.weightHistory, record.weightHistory);
