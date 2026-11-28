@@ -30,12 +30,15 @@
 
   function explain(error) {
     if (error?.category === "file") return error.message;
+    if (error?.outcome === "abandoned") return "The earlier upload is closed and cannot be saved.";
     if (error?.category === "network") return "Cloud photos could not be reached. Check your connection and Cloudflare Access session.";
     if (error?.status === 401 || error?.category === "auth") return "Sign in to Cloudflare Access and try again.";
     if (error?.status === 403) return "You do not have permission to change this cloud gallery.";
     if (error?.status === 404) return "This cloud rabbit or photo is no longer available.";
     if (error?.status === 409) return "This gallery or rabbit changed. Reload and review the gallery before trying again.";
-    if (error?.status === 413 || error?.status === 415) return "The server rejected the image format or size. Choose another photo.";
+    if (error?.status === 413) return "The JPEG is too large for cloud upload. Choose a smaller photo.";
+    if (error?.status === 415) return "The server could not validate the prepared JPEG. Try a different photo.";
+    if (error?.status === 400) return "The server rejected the upload request. Reload the gallery and try again.";
     if (error?.status === 503) return "Cloud photo storage is temporarily unavailable.";
     return "The cloud photo request could not be confirmed.";
   }
@@ -51,16 +54,28 @@
         if (event.lengthComputable && event.total > 0) progress(Math.min(1, event.loaded / event.total));
       };
       xhr.onload = () => resolve({ status: xhr.status, url: xhr.responseURL, text: xhr.responseText });
-      xhr.onerror = xhr.ontimeout = xhr.onabort = () => reject(requestError(0, "network"));
+      const network = reason => () => reject(Object.assign(requestError(0, "network"), { networkError: reason }));
+      xhr.onerror = network("transport");
+      xhr.ontimeout = network("timeout");
+      xhr.onabort = network("aborted");
       xhr.send(body);
     });
   }
 
   function parseReply(response, baseRevision) {
     if (response.url && new URL(response.url, location.origin).origin !== location.origin) {
-      throw requestError(401, "auth");
+      throw Object.assign(requestError(401, "auth"), { httpStatus: response.status || null });
     }
-    if (response.status !== 200) throw requestError(response.status, "http");
+    if (response.status === 0) throw Object.assign(requestError(0, "network"), { networkError: "transport" });
+    if (response.status !== 200) {
+      const error = requestError(response.status, "http");
+      try {
+        const outcome = JSON.parse(response.text)?.outcome;
+        if (([400, 413, 415].includes(response.status) && outcome === "rejected") ||
+            (response.status === 409 && outcome === "abandoned")) error.outcome = outcome;
+      } catch { /* A proxy error can be an HTML response. */ }
+      throw error;
+    }
     let result;
     try { result = JSON.parse(response.text); }
     catch { throw requestError(200, "malformed"); }
@@ -84,26 +99,37 @@
         if (response.type !== "opaqueredirect" && ![301, 302, 303, 307, 308].includes(response.status)) {
           return { status: response.status, url: response.url, text: await response.text() };
         }
-      } catch { throw requestError(0, "network"); }
-      throw requestError(401, "auth");
+      } catch { throw Object.assign(requestError(0, "network"), { networkError: "transport" }); }
+      throw Object.assign(requestError(401, "auth"), { httpStatus: response.status || null });
+    }
+    async function operationReceipt(params, allowed) {
+      const raw = await jsonRequest(params, "POST");
+      if (raw.url && new URL(raw.url, location.origin).origin !== location.origin) throw requestError(401, "auth");
+      if (raw.status !== 200) throw requestError(raw.status, "http");
+      let receipt;
+      try { receipt = JSON.parse(raw.text); } catch { throw requestError(200, "malformed"); }
+      if (!allowed.includes(receipt?.state) ||
+          (receipt.state === "committed" ? !Number.isSafeInteger(receipt.committedRevision) || receipt.committedRevision < 1
+            : receipt.committedRevision !== null)) throw requestError(200, "malformed");
+      return receipt;
     }
     return {
       load: async () => parseReply(await jsonRequest({}, "GET")),
-      reconcile: async operationId => {
-        const raw = await jsonRequest({ action: "reconcile", operationId }, "POST");
-        if (raw.url && new URL(raw.url, location.origin).origin !== location.origin) throw requestError(401, "auth");
-        if (raw.status !== 200) throw requestError(raw.status, "http");
-        let receipt;
-        try { receipt = JSON.parse(raw.text); } catch { throw requestError(200, "malformed"); }
-        if (!["reserved", "committed", "abandoned"].includes(receipt?.state) ||
-            (receipt.state === "committed" && !Number.isSafeInteger(receipt.committedRevision))) {
-          throw requestError(200, "malformed");
-        }
-        return receipt;
-      },
+      reconcile: operationId => operationReceipt({ action: "reconcile", operationId }, ["reserved", "committed", "abandoned"]),
+      cancel: ({ operationId, baseRevision }) =>
+        operationReceipt({ action: "cancel", operationId, baseRevision }, ["committed", "abandoned"]),
       mutate: async (operation, progress = () => {}) => {
         const { jpeg, ...params } = operation;
-        const raw = jpeg ? await upload(urlFor(scope, params), jpeg, progress) : await jsonRequest(params, "POST");
+        let raw;
+        if (jpeg) {
+          try { raw = await upload(urlFor(scope, params), jpeg, progress); }
+          catch (error) {
+            if (error?.category === "network") throw error;
+            throw Object.assign(requestError(0, "network"), { networkError: "transport" });
+          }
+        } else {
+          raw = await jsonRequest(params, "POST");
+        }
         const result = parseReply(raw, params.baseRevision);
         if (jpeg ? result.revision !== params.baseRevision + 1 : result.replayed === true) {
           throw requestError(200, "malformed");
@@ -170,14 +196,16 @@
     }
   }
 
-  async function compressPhoto(file) {
+  async function compressPhoto(file, report = () => {}) {
     if (!file.size || file.size > 20 * 1024 * 1024 || file.type === "image/svg+xml" ||
         (file.type && !file.type.startsWith("image/"))) {
       throw requestError(0, "file", "Choose an image smaller than 20 MiB.");
     }
+    report({ stage: "decoding" });
     const decoded = await decodePhoto(file);
     try {
       const { width, height } = photoDimensions(decoded.width, decoded.height);
+      report({ stage: "encoding", width, height });
       const canvas = document.createElement("canvas");
       canvas.width = width;
       canvas.height = height;
@@ -191,6 +219,7 @@
       if (!jpeg || jpeg.type !== "image/jpeg" || !jpeg.size || jpeg.size > MAX_UPLOAD) {
         throw requestError(0, "file", "Could not create a JPEG within the upload limit.");
       }
+      report({ stage: "encoded", bytes: jpeg.size });
       return jpeg;
     } finally { decoded.close(); }
   }
@@ -205,9 +234,21 @@
     let batch = null;
     let reloadRequired = false;
     let recovery = null;
-    const state = () => ({ snapshot, busy, message, progress, retry: !!batch, recovery, reloadRequired });
+    let diagnostic = null;
+    const state = () => ({ snapshot, busy, message, progress, retry: !!batch, recovery, reloadRequired, diagnostic });
     const draw = () => { if (isCurrent()) onChange(state()); };
     const say = value => { message = value; draw(); };
+    function report(data) {
+      diagnostic = { ...diagnostic, ...data };
+      draw();
+    }
+    function beginDiagnostic(operationId, file) {
+      const type = typeof file?.type === "string" ? file.type.toLowerCase() : "";
+      diagnostic = null;
+      report({ operationId, sourceFormat: /^image\/[a-z0-9.+-]{1,40}$/.test(type) ? type : "unknown",
+        encodedFormat: "image/jpeg", width: null, height: null, bytes: null,
+        stage: "preparing", httpStatus: null, networkError: null, outcome: null });
+    }
     async function perform(work) {
       if (busy || !isCurrent()) return false;
       busy = true;
@@ -231,9 +272,10 @@
         }
       }
       recovery = journal?.list()[0] || null;
+      if (recovery && !diagnostic) beginDiagnostic(recovery.operationId);
       if (recovered) message = `${recovered} interrupted upload(s) confirmed in the gallery.` +
         (remaining ? ` Select the ${remaining} remaining photo(s) again if you still want to add them.` : "");
-      if (recovery) message += " An earlier upload is unresolved. Check its status or reselect the same photo.";
+      if (recovery) message += " An earlier upload is unresolved. Check its status, cancel it, or reselect the same photo.";
     }
     async function load() {
       return perform(async () => {
@@ -250,14 +292,19 @@
     }
     async function sendBatch() {
       let saved = 0;
+      let attemptWasRetry = false;
       try {
         while (isCurrent() && batch.files.length) {
+          attemptWasRetry = false;
           const number = batch.total - batch.files.length + 1;
           if (!batch.pending) {
+            const operationId = makeId();
+            beginDiagnostic(operationId, batch.files[0]);
             say(`Preparing photo ${number} of ${batch.total}…`);
-            const jpeg = await compress(batch.files[0]);
+            const jpeg = await compress(batch.files[0], report);
+            report({ bytes: jpeg.size, stage: "encoded" });
             batch.pending = { action: batch.photoId ? "replace" : "add", baseRevision: snapshot.revision,
-              ...(batch.photoId ? { photoId: batch.photoId } : {}), operationId: makeId(), jpeg };
+              ...(batch.photoId ? { photoId: batch.photoId } : {}), operationId, jpeg };
           }
           if (journal && !batch.receipt) {
             const { jpeg, ...operation } = batch.pending;
@@ -273,8 +320,16 @@
             }
           }
           progress = 0;
+          attemptWasRetry = !!batch.sent;
+          batch.sent = true;
+          report({ stage: "sending", httpStatus: null, networkError: null, outcome: null });
           say(`Uploading photo ${number} of ${batch.total}…`);
-          const result = await api.mutate(batch.pending, value => { progress = value; draw(); });
+          const result = await api.mutate(batch.pending, value => {
+            progress = value;
+            if (value === 1) report({ stage: "awaiting-response" });
+            else draw();
+          });
+          report({ stage: "confirmed", httpStatus: 200, outcome: "committed" });
           if (!isCurrent()) {
             // The reopened gallery will verify the receipt and report any unsent selections.
             if (!result.replayed) { snapshot = result; saved++; }
@@ -284,6 +339,7 @@
           // Mark the file complete immediately. A replay's follow-up GET can fail independently.
           batch.files.shift();
           batch.pending = null;
+          batch.sent = false;
           saved++;
           if (result.replayed) {
             reloadRequired = true;
@@ -312,7 +368,17 @@
         recovery = journal?.list()[0] || null;
         say("Cloud photographs saved.");
       } catch (error) {
-        const retry = !reloadRequired && !!batch?.pending &&
+        const rejected = error?.outcome === "rejected" && !attemptWasRetry;
+        const abandoned = error?.outcome === "abandoned";
+        const uncertain = !rejected && !abandoned && !!batch?.pending && !!batch.sent;
+        if ((rejected || abandoned) && batch?.receipt) journal.remove(batch.receipt.operationId);
+        if (diagnostic && diagnostic.outcome !== "committed") {
+          const networkError = error?.category === "network"
+            ? (["transport", "timeout", "aborted"].includes(error.networkError) ? error.networkError : "transport") : null;
+          report({ httpStatus: error?.httpStatus ?? (error?.status || null), networkError,
+            outcome: abandoned ? "abandoned" : rejected ? "rejected" : uncertain ? "uncertain" : "not-sent" });
+        }
+        const retry = uncertain && !reloadRequired &&
           (["network", "malformed", "auth"].includes(error?.category) || error?.status === 401 || error?.status >= 500);
         if (!retry) {
           if (isCurrent() && batch?.confirmedId) journal.remove(batch.confirmedId);
@@ -320,7 +386,9 @@
           recovery = journal?.list()[0] || null;
           if (error?.status === 409) reloadRequired = true;
         }
-        say(`${saved ? `${saved} saved. ` : ""}${explain(error)}${retry ? " Use Retry upload to safely resend the same photo." : ""}`);
+        const guidance = retry ? " Retry with the same photo or cancel the pending upload."
+          : uncertain ? " The earlier delivery is unconfirmed. Check its status or cancel it." : "";
+        say(`${saved ? `${saved} saved. ` : ""}${explain(error)}${guidance}`);
       } finally { if (saved) await sync(); }
     }
     function uploadFiles(files, photoId = null) {
@@ -382,10 +450,39 @@
             if (receipt.remaining) message += " Other selected photos were not sent. Select them again if needed.";
             reviewJournal();
           } else {
-            message = "The earlier upload is still unresolved. Reselect the same photo to retry it safely.";
+            message = "The earlier upload is still unresolved. Cancel it or reselect the same photo to retry safely.";
           }
           await sync();
         } catch (error) { say(explain(error)); }
+      });
+    }
+    function cancelRecovery() {
+      const pending = batch?.receipt || recovery;
+      if (!pending) return Promise.resolve(false);
+      return perform(async () => {
+        say("Checking whether the pending upload can be canceled…");
+        try {
+          const receipt = await api.cancel(pending);
+          if (receipt.state === "committed" && receipt.committedRevision !== pending.baseRevision + 1) {
+            throw requestError(200, "malformed");
+          }
+          journal.remove(pending.operationId);
+          batch = null;
+          recovery = journal.list()[0] || null;
+          reloadRequired = true;
+          const committed = receipt.state === "committed";
+          const result = committed ? "The photo was already saved and has been kept."
+            : "Pending upload canceled. You can choose another photo.";
+          message = result + (pending.remaining ? " Other selected photos were not sent." : "");
+          try {
+            snapshot = await api.load();
+            reloadRequired = false;
+            reviewJournal();
+            await sync();
+          } catch { message += " Reload the gallery to see its current photos."; }
+        } catch (error) {
+          say(`${explain(error)} Cancellation was not confirmed. Check the status or try canceling again.`);
+        }
       });
     }
     function recoverFile(file) {
@@ -394,14 +491,16 @@
         const receipt = recovery;
         try {
           say("Checking the selected photograph against the earlier upload…");
-          const jpeg = await compress(file);
+          beginDiagnostic(receipt.operationId, file);
+          const jpeg = await compress(file, report);
+          report({ bytes: jpeg.size, stage: "encoded" });
           if (await hash(jpeg) !== receipt.sha256) {
             say("This photo does not match the earlier upload. Choose the same original or check its status.");
             return;
           }
           if (!isCurrent()) return;
           const { sha256, remaining, ...operation } = receipt;
-          batch = { files: [file], total: 1, pending: { ...operation, jpeg }, receipt };
+          batch = { files: [file], total: 1, pending: { ...operation, jpeg }, receipt, sent: true };
           reloadRequired = false;
           await sendBatch();
           if (!batch && !recovery && remaining) say(message + " Select any remaining photos again.");
@@ -409,7 +508,7 @@
       });
     }
     return { getState: state, load, uploadFiles, change,
-      checkRecovery, recoverFile, retry: () => batch?.pending ? perform(sendBatch) : Promise.resolve(false) };
+      checkRecovery, cancelRecovery, recoverFile, retry: () => batch?.pending ? perform(sendBatch) : Promise.resolve(false) };
   }
 
   window.twCloudRabbitPhotos = { createApi, createJournal, createSession, primaryPhotoUrl, photoDimensions, compressPhoto, mount };
@@ -500,13 +599,23 @@
     const choose = fileControl("Choose photos", { multiple: true, change: files => session.uploadFiles(files) });
     const retry = button("Retry upload", () => session.retry());
     const check = button("Check prior upload", () => session.checkRecovery());
+    const cancel = button("Cancel pending upload", () => {
+      if (window.confirm("Cancel this unresolved upload? A photo that was already saved will be kept.")) {
+        session.cancelRecovery();
+      }
+    });
     const recover = fileControl("Reselect original photo", { change: files => session.recoverFile(files[0]) });
     const reload = button("Reload gallery", () => {
       if (!session.getState().retry || window.confirm("Reload and keep the pending upload receipt? You may need to reselect the original photo.")) session.load();
     });
-    controls.append(take.label, choose.label, retry, check, recover.label, reload);
+    controls.append(take.label, choose.label, retry, check, cancel, recover.label, reload);
+    const diagnostics = node("details");
+    const report = node("pre");
+    report.style.whiteSpace = "pre-wrap";
+    report.style.overflowWrap = "anywhere";
+    diagnostics.append(node("summary", "Upload diagnostics"), report);
     panel.className = "tw-gallery tw-cloud-photo-gallery";
-    panel.append(heading, status, progress, hero, controls, grid);
+    panel.append(heading, status, progress, hero, controls, diagnostics, grid);
     let renderedGallery;
     let lastBusy = false;
     const session = createSession(createApi(scope), {
@@ -521,9 +630,13 @@
       if (!progress.hidden) progress.value = state.progress;
       retry.hidden = !state.retry;
       retry.disabled = state.busy;
+      cancel.hidden = !state.recovery && !state.retry;
+      cancel.disabled = state.busy;
       check.hidden = recover.label.hidden = !state.recovery || state.retry;
       check.disabled = recover.input.disabled = state.busy;
       reload.disabled = state.busy;
+      diagnostics.hidden = !state.diagnostic;
+      if (state.diagnostic) report.textContent = JSON.stringify(state.diagnostic, null, 2);
       take.input.disabled = choose.input.disabled = disabled || gallery.photos.length >= LIMIT;
       if (renderedGallery !== gallery && gallery) {
         renderedGallery = gallery;

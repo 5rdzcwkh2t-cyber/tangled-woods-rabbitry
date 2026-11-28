@@ -214,7 +214,7 @@ test("mounted gallery exposes separate camera and multi-select inputs and keyboa
   class Element {
     constructor(tag) {
       this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {};
-      this.className = ""; this.textContent = ""; this.isConnected = true;
+      this.className = ""; this.textContent = ""; this.isConnected = true; this.style = {};
     }
     append(...children) { for (const child of children) { child.parent = this; this.children.push(child); } }
     replaceChildren(...children) { this.children.length = 0; this.append(...children); }
@@ -369,4 +369,103 @@ test("the image-element decoder revokes temporary object URLs on success and fai
   shouldFail = true;
   await assert.rejects(compressPhoto(jpeg), { category: "file" });
   assert.deepEqual(events, ["blob:temporary", "revoked blob:temporary", "blob:temporary", "revoked blob:temporary"]);
+});
+
+test("cancellation sends no image or checksum and validates the returned receipt", async () => {
+  const { createApi } = load();
+  let call;
+  const api = createApi(scope, { fetchImpl: async (url, init) => {
+    call = [url, init];
+    return { status: 200, url: origin + url, text: async () => '{"state":"abandoned","committedRevision":null}' };
+  } });
+  const receipt = await api.cancel({ operationId: id(4), baseRevision: 7, sha256: "private", jpeg });
+  assert.equal(receipt.state, "abandoned");
+  assert.deepEqual(Object.fromEntries(new URL(call[0], origin).searchParams),
+    { ...scope, action: "cancel", operationId: id(4), baseRevision: "7" });
+  assert.equal(call[1].method, "POST");
+  assert.equal(call[1].body, undefined);
+});
+
+test("a confirmed first JPEG rejection removes its receipt and retains sanitized diagnostics", async () => {
+  const { createApi, createSession, createJournal } = load();
+  const journal = createJournal(scope, () => storage);
+  const storage = storageFixture();
+  const api = createApi(scope, {
+    fetchImpl: async url => ({ status: 200, url: origin + url, text: async () => JSON.stringify(result(4)) }),
+    upload: async url => ({
+      status: 415, url: origin + url,
+      text: JSON.stringify({ error: "raw server details must not appear", outcome: "rejected" })
+    })
+  });
+  const image = { type: "image/heic", name: "private-key-looking-filename.heic" };
+  const session = createSession(api, { journal, hash: async () => "a".repeat(64), makeId: () => id(1),
+    compress: async (_, report) => { report({ stage: "encoding", width: 600, height: 900 }); return jpeg; } });
+  await session.load();
+  await session.uploadFiles([image]);
+  const state = session.getState();
+  assert.equal(journal.list().length, 0);
+  assert.equal(state.recovery, null);
+  assert.equal(state.retry, false);
+  assert.match(state.message, /could not validate the prepared JPEG/);
+  assert.deepEqual({ ...state.diagnostic }, {
+    operationId: id(1), sourceFormat: "image/heic", encodedFormat: "image/jpeg",
+    width: 600, height: 900, bytes: jpeg.size, stage: "sending", httpStatus: 415,
+    networkError: null, outcome: "rejected"
+  });
+  assert.doesNotMatch(JSON.stringify(state), /raw server details|private-key-looking|normalized fixture/);
+});
+
+test("a rejection on retry preserves uncertainty until cancellation is confirmed without the original file", async () => {
+  const { createSession, createJournal } = load();
+  const storage = storageFixture();
+  const journal = createJournal(scope, () => storage);
+  let attempts = 0, cancellations = 0;
+  const api = {
+    load: async () => result(4),
+    mutate: async () => {
+      if (++attempts === 1) throw Object.assign(failure(0, "network"), { networkError: "timeout" });
+      throw Object.assign(failure(415), { outcome: "rejected" });
+    },
+    cancel: async receipt => {
+      assert.equal(receipt.operationId, id(2));
+      if (++cancellations === 1) throw failure(0, "network");
+      return { state: "abandoned", committedRevision: null };
+    }
+  };
+  const initial = createSession(api, { journal, hash: async () => "a".repeat(64),
+    makeId: () => id(2), compress: async () => jpeg });
+  await initial.load();
+  await initial.uploadFiles(["camera photo"]);
+  assert.equal(initial.getState().diagnostic.networkError, "timeout");
+  assert.equal(initial.getState().diagnostic.outcome, "uncertain");
+  await initial.retry();
+  assert.equal(initial.getState().diagnostic.outcome, "uncertain");
+  const reopened = createSession(api, { journal, compress: async () => { throw Error("Image unavailable"); } });
+  await reopened.load();
+  await reopened.cancelRecovery();
+  assert.equal(journal.list().length, 1);
+  assert.match(reopened.getState().message, /Cancellation was not confirmed/);
+  await reopened.cancelRecovery();
+  assert.equal(journal.list().length, 0);
+  assert.equal(reopened.getState().recovery, null);
+  assert.equal(reopened.getState().reloadRequired, false);
+  assert.match(reopened.getState().message, /upload canceled/);
+  assert.equal(attempts, 2);
+});
+
+test("cancel recovery confirms a completed upload and retains the committed image", async () => {
+  const { createSession, createJournal } = load();
+  const storage = storageFixture();
+  const journal = createJournal(scope, () => storage);
+  journal.save({ action: "add", operationId: id(9), baseRevision: 4, sha256: "b".repeat(64) });
+  let reads = 0;
+  const session = createSession({
+    load: async () => ++reads === 1 ? result(4) : result(5, [id(9)]),
+    cancel: async () => ({ state: "committed", committedRevision: 5 })
+  }, { journal });
+  await session.load();
+  await session.cancelRecovery();
+  assert.match(session.getState().message, /already saved and has been kept/);
+  assert.equal(session.getState().snapshot.gallery.primaryId, id(9));
+  assert.equal(journal.list().length, 0);
 });

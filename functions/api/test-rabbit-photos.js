@@ -11,6 +11,7 @@ const digest = /^[0-9a-f]{64}$/;
 const headers = { "Cache-Control": "private, no-store", "X-Content-Type-Options": "nosniff" };
 const reply = (data, status = 200) => Response.json(data, { status, headers });
 const conflict = () => reply({ error: "Rabbit or photo operation changed; reload before saving" }, 409);
+const closedUpload = () => reply({ error: "This upload has been closed", outcome: "abandoned" }, 409);
 
 function parameters(request, write) {
   const query = new URL(request.url).searchParams;
@@ -34,8 +35,8 @@ function parameters(request, write) {
   const upload = action === "add" || action === "replace";
   const baseRevision = revision !== null && /^\d+$/.test(revision) ? Number(revision) : null;
   if (write && (
-    !["add", "replace", "remove", "primary", "reconcile"].includes(action) ||
-    ((upload || action === "reconcile") ? !uuid.test(operationId || "") : operationId !== null) ||
+    !["add", "replace", "remove", "primary", "reconcile", "cancel"].includes(action) ||
+    ((upload || action === "reconcile" || action === "cancel") ? !uuid.test(operationId || "") : operationId !== null) ||
     (action === "reconcile" ? revision !== null
       : !Number.isSafeInteger(baseRevision) || baseRevision >= Number.MAX_SAFE_INTEGER) ||
     (["replace", "remove", "primary"].includes(action) !== (photoId !== null))
@@ -102,6 +103,35 @@ async function reconcile(env, input, subject, role) {
   return reply({ state: current.state, objectPresent: !!object, committedRevision: current.committed_revision });
 }
 
+async function cancelUpload(env, input, subject) {
+  const { rabbitryId, typedId, operationId, baseRevision } = input;
+  // The same unique key serializes reservation and cancellation. The photo
+  // revision insert requires a reserved row in its own atomic SQL statement.
+  // An absent operation gets a permanent abandoned receipt with no image hash.
+  await env.DB.prepare(
+    `INSERT INTO rabbit_photo_uploads
+       (rabbitry_id, rabbit_typed_id, photo_id, subject, base_revision, sha256, state, expires_at)
+     SELECT v.rabbitry_id, v.typed_id, ?, ?, v.revision, ?, 'abandoned', ?
+     FROM rabbit_record_versions v
+     WHERE v.rabbitry_id = ? AND v.typed_id = ? AND v.revision = ?
+       AND EXISTS (
+         SELECT 1 FROM rabbitry_memberships m JOIN rabbitries r ON r.id = m.rabbitry_id
+         WHERE m.rabbitry_id = v.rabbitry_id AND m.access_subject = ?
+           AND m.revoked_at IS NULL AND r.deleted_at IS NULL AND m.role IN ('owner','admin','editor')
+       )
+     ON CONFLICT(rabbitry_id, rabbit_typed_id, photo_id) DO UPDATE SET state = 'abandoned'
+     WHERE rabbit_photo_uploads.state = 'reserved' AND rabbit_photo_uploads.subject = excluded.subject
+       AND rabbit_photo_uploads.base_revision = excluded.base_revision`
+  ).bind(operationId, subject, "0".repeat(64), new Date().toISOString(),
+    rabbitryId, typedId, baseRevision, subject).run();
+  const row = await findUpload(env, input);
+  if (!row || row.subject !== subject || row.base_revision !== baseRevision) {
+    return reply({ error: "Photo operation not found" }, 404);
+  }
+  if (row.state === "reserved") return conflict();
+  return reply({ state: row.state, committedRevision: row.committed_revision });
+}
+
 async function saveGallery(env, input, subject, previous, gallery) {
   const version = preparedVersion({ ...previous.record, [PHOTO_GALLERY_FIELD]: gallery },
     input.baseRevision + 1, previous.createdAt, new Date().toISOString());
@@ -117,6 +147,9 @@ async function uploadPhoto(env, input, subject, previous, gallery, deleted) {
   const matches = row => row.subject === subject && row.sha256 === photo.sha256 &&
     row.base_revision === input.baseRevision && row.replace_photo_id === input.photoId;
   let row = await findUpload(env, input);
+  const abandoned = row => row?.state === "abandoned" && row.subject === subject &&
+    row.base_revision === input.baseRevision;
+  if (abandoned(row)) return closedUpload();
   if (row && !matches(row)) return conflict();
   if (row?.state === "committed") return reply({ revision: row.committed_revision, replayed: true });
   if (deleted || previous.revision !== input.baseRevision) return conflict();
@@ -124,6 +157,7 @@ async function uploadPhoto(env, input, subject, previous, gallery, deleted) {
   if (input.action === "replace" && index < 0) return reply({ error: "Photo not found" }, 404);
   if (input.action === "add" && gallery.photos.length >= MAX_PHOTOS) return reply({ error: "Gallery is full" }, 409);
   row ||= await reserveUpload(env, input, subject, photo);
+  if (abandoned(row)) return closedUpload();
   if (!row || !matches(row)) return conflict();
   if (row.state === "committed") return reply({ revision: row.committed_revision, replayed: true });
   if (row.state !== "reserved" || Date.parse(row.expires_at) <= Date.now()) return conflict();
@@ -147,6 +181,7 @@ async function uploadPhoto(env, input, subject, previous, gallery, deleted) {
   if (result.status === 409) {
     const receipt = await findUpload(env, input);
     if (receipt?.state === "committed") return reply({ revision: receipt.committed_revision, replayed: true });
+    if (abandoned(receipt)) return closedUpload();
   }
   return result;
 }
@@ -161,10 +196,11 @@ async function handle({ request, env }, write) {
     const input = { ...parameters(request, write), request };
     const access = await authorize(env, input.rabbitryId, auth.subject, write);
     if (access.error) return access.error;
-    if (!env.PHOTOS) return reply({ error: "Cloud photo storage unavailable" }, 503);
     if (write && !await env.DB.prepare(
       "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_rabbit_photo_upload_commit'"
     ).first()) return reply({ error: "Cloud photo ledger unavailable" }, 503);
+    if (input.action === "cancel") return await cancelUpload(env, input, auth.subject);
+    if (!env.PHOTOS) return reply({ error: "Cloud photo storage unavailable" }, 503);
     if (input.action === "reconcile") return await reconcile(env, input, auth.subject, access.role);
     const row = await latestRow(env, input.rabbitryId, input.typedId);
     if (!row || (!write && row.deleted_at !== null)) return reply({ error: "Rabbit not found" }, 404);
@@ -195,7 +231,7 @@ async function handle({ request, env }, write) {
       : gallery.primaryId === photo.id ? photos[0]?.id ?? null : gallery.primaryId;
     return await saveGallery(env, input, auth.subject, previous, { photos, primaryId });
   } catch (error) {
-    if (error instanceof PhotoInputError) return reply({ error: error.message }, error.status);
+    if (error instanceof PhotoInputError) return reply({ error: error.message, outcome: "rejected" }, error.status);
     if (/UNIQUE constraint failed: rabbit_record_versions/i.test(String(error?.message))) return conflict();
     return reply({ error: "Cloud photo operation unavailable" }, 503);
   }

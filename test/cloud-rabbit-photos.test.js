@@ -244,3 +244,73 @@ test("a failed ledger update rolls back the photo revision and allows exact retr
   assert.equal(f.database.prepare("SELECT state FROM rabbit_photo_uploads WHERE photo_id=?").get(add.operationId).state, "committed");
   assert.equal(f.objects.size, 1);
 });
+
+test("canceling a missing reservation is idempotent and blocks a delayed upload", async t => {
+  const f = await fixture(t);
+  const operationId = randomUUID();
+  const cancel = { action: "cancel", baseRevision: 0, operationId };
+  const upload = { action: "add", baseRevision: 0, operationId };
+  const result = { state: "abandoned", committedRevision: null };
+  assert.deepEqual(await json(await f.post(cancel)), result);
+  assert.deepEqual(await json(await f.post(cancel)), result);
+  assert.equal((await json(await f.post(upload), 409)).outcome, "abandoned");
+  assert.equal((await json(await f.get())).revision, 0);
+  assert.equal(f.objects.size, 0);
+  assert.equal(f.database.prepare("SELECT count(*) AS n FROM rabbit_photo_uploads").get().n, 1);
+});
+
+test("cancellation during an R2 write prevents a concurrent commit and preserves the private object", async t => {
+  const f = await fixture(t);
+  let entered, release;
+  const started = new Promise(resolve => { entered = resolve; });
+  const pause = new Promise(resolve => { release = resolve; });
+  const put = f.photos.put;
+  f.photos.put = async (...args) => { entered(); await pause; return put(...args); };
+  const operationId = randomUUID();
+  const upload = f.post({ action: "add", baseRevision: 0, operationId });
+  await started;
+  try {
+    assert.deepEqual(await json(await f.post({ action: "cancel", baseRevision: 0, operationId })),
+      { state: "abandoned", committedRevision: null });
+  } finally { release(); }
+  assert.equal((await json(await upload, 409)).outcome, "abandoned");
+  assert.equal((await json(await f.get())).revision, 0);
+  assert.equal((await f.get({ photoId: operationId })).status, 404);
+  assert.equal(f.objects.size, 1);
+});
+
+test("cancellation after a committed upload returns its receipt even after photo removal", async t => {
+  const f = await fixture(t);
+  const operationId = randomUUID();
+  await json(await f.post({ action: "add", baseRevision: 0, operationId }));
+  await json(await f.post({ action: "remove", baseRevision: 1, photoId: operationId }));
+  const cancel = { action: "cancel", baseRevision: 0, operationId };
+  const response = { state: "committed", committedRevision: 1 };
+  delete f.env.PHOTOS;
+  assert.deepEqual(await json(await f.post(cancel)), response);
+  assert.deepEqual(await json(await f.post(cancel)), response);
+  assert.equal((await f.post({ ...cancel, baseRevision: 1 })).status, 404);
+  assert.equal(f.objects.size, 1);
+  assert.equal(f.database.prepare("SELECT max(revision) AS n FROM rabbit_record_versions WHERE rabbitry_id='woods'").get().n, 2);
+});
+
+test("cancellation is scoped to the authorized uploader and rejected JPEGs have an explicit outcome", async t => {
+  const f = await fixture(t);
+  const { token } = await getTestAuth();
+  const editor = await token({ sub: "another-editor" });
+  f.database.prepare("INSERT INTO rabbitry_memberships VALUES ('woods','another-editor','editor',?,?,NULL)")
+    .run(timestamp, timestamp);
+  const operationId = randomUUID();
+  const add = { action: "add", baseRevision: 0, operationId };
+  const cancel = { ...add, action: "cancel" };
+  assert.equal((await json(await f.post(add, { body: Buffer.from("not JPEG") }), 415)).outcome, "rejected");
+  assert.equal(f.database.prepare("SELECT count(*) AS n FROM rabbit_photo_uploads").get().n, 0);
+  f.photos.put = async () => { throw new Error("Interrupted upload"); };
+  await json(await f.post(add), 503);
+  assert.equal((await f.post(cancel, { token: editor })).status, 404);
+  assert.equal((await f.post(cancel, { origin: "https://other.test" })).status, 403);
+  assert.equal((await f.post(cancel, { token: null })).status, 401);
+  assert.equal(f.database.prepare("SELECT state FROM rabbit_photo_uploads").get().state, "reserved");
+  assert.equal((await json(await f.post({ ...cancel, rabbitryId: "other" }))).state, "abandoned");
+  assert.equal(f.database.prepare("SELECT state FROM rabbit_photo_uploads WHERE rabbitry_id='woods'").get().state, "reserved");
+});
