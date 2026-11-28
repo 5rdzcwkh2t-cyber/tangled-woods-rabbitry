@@ -357,7 +357,7 @@
     MILESTONE_FIELDS, buildWeightHistoryFromDraft, clearMilestoneDraft, createArchiveRevision, createController, createMilestoneRevision,
     createWeightRevision, filterCloudRecords, isArchivedRabbit, isDevelopmentPreviewHost,
     isValidDate, nextCloudView, requestMessage, validateMilestones, validateWeightHistory,
-    weightFromParts, eligibleParents
+    weightFromParts, eligibleParents, serializeParentChange
   };
 
   if (typeof window.render !== "function" || typeof window.nav !== "function") return;
@@ -471,7 +471,14 @@
     return [rabbit.Prefix, rabbit.Name ?? rabbit.name].filter(Boolean).join(" ") || "Unnamed rabbit";
   }
 
-  function renderParentField(state, draft, role, changes) {
+  function serializeParentChange(currentId, currentName, selectedId, historicalName) {
+    if (selectedId) return selectedId === currentId ? undefined : selectedId;
+    const name = historicalName.trim();
+    if (!currentId && name === (currentName || "").trim()) return undefined;
+    return name ? { name } : null;
+  }
+
+  function renderParentField(state, draft, role, changes, readChanges) {
     const title = role === "Father" ? "Sire" : "Dam";
     const group = node("fieldset", undefined, "tw-cloud-parent-field");
     group.append(node("legend", title));
@@ -489,13 +496,12 @@
     choiceLabel.append(choice);
     const textLabel = node("label", "Historical name (text only)");
     const text = document.createElement("input");
-    text.value = draft[role] || "";
-    text.oninput = () => { draft[role] = text.value; };
+    text.value = current ? "" : draft[role] || "";
     textLabel.append(text);
     const result = node("p", "", "muted");
     result.setAttribute("role", "status");
     const selectedId = () => Object.hasOwn(changes, role) ? changes[role] : current;
-    const syncText = () => { textLabel.hidden = !!current || !!selectedId(); };
+    const syncText = () => { textLabel.hidden = !!selectedId(); };
     function appendChoice(value, label) {
       const option = node("option", label);
       option.value = value;
@@ -505,7 +511,7 @@
       const selected = selectedId();
       const matches = eligibleParents(state.records, draft._id, role, search.value);
       choice.replaceChildren();
-      appendChoice("", current ? "Clear parent link and name" : "No linked rabbit");
+      appendChoice("", "No linked rabbit");
       if (current) appendChoice(current, `Keep current: ${draft[role] || "Linked rabbit"}`);
       for (const candidate of matches) {
         const { record, metadata } = candidate;
@@ -527,6 +533,7 @@
       syncText();
     };
     refresh();
+    readChanges[role] = () => serializeParentChange(current, draft[role], choice.value || null, text.value);
     group.append(searchLabel, choiceLabel, result, textLabel);
     return group;
   }
@@ -884,10 +891,11 @@
     const dateField = Object.hasOwn(draft, "DOB") && !Object.hasOwn(draft, "DoB") ? "DOB" : "DoB";
     const fields = CLOUD_PROFILE_FIELDS.map((field) => field === "DoB" ? dateField : field);
     const changes = parentDrafts.get(draft) || {};
+    const readChanges = {};
     parentDrafts.set(draft, changes);
     for (const field of fields) {
       if (field === "Father" || field === "Mother") {
-        form.append(renderParentField(state, draft, field, changes));
+        form.append(renderParentField(state, draft, field, changes, readChanges));
         continue;
       }
       const label = node("label", field);
@@ -910,7 +918,9 @@
       saveButton.disabled = true;
       status.textContent = "Saving cloud rabbit...";
       try {
-        const parentChanges = Object.keys(changes).length ? changes : undefined;
+        const commands = Object.fromEntries(Object.entries(readChanges)
+          .map(([role, read]) => [role, read()]).filter(([, value]) => value !== undefined));
+        const parentChanges = Object.keys(commands).length ? commands : undefined;
         const saved = editing
           ? await controller.updateCloud(entry, draft, parentChanges)
           : await controller.createCloud(draft, parentChanges);

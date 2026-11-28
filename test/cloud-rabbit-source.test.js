@@ -51,6 +51,7 @@ async function loadController(fetchImpl) {
     createWeightRevision: context.window.twCloudRabbitSource.createWeightRevision,
     filterCloudRecords: context.window.twCloudRabbitSource.filterCloudRecords,
     eligibleParents: context.window.twCloudRabbitSource.eligibleParents,
+    serializeParentChange: context.window.twCloudRabbitSource.serializeParentChange,
     isDevelopmentPreviewHost: context.window.twCloudRabbitSource.isDevelopmentPreviewHost,
     isValidDate: context.window.twCloudRabbitSource.isValidDate,
     nextCloudView: context.window.twCloudRabbitSource.nextCloudView,
@@ -212,6 +213,18 @@ test("parent picker searches eligible cloud rabbits and preserves typed identiti
   ];
   assert.deepEqual(Array.from(eligibleParents(records, 7, "Father", " a2 "), x => x.record._id), ["7"]);
   assert.deepEqual(Array.from(eligibleParents(records, 7, "Mother", "rex"), x => x.record._id), ["dam"]);
+});
+
+test("parent editor serializes historical names with or without a previous link", async () => {
+  const { serializeParentChange } = await loadController(async () => {});
+  const linked = 's:"sire"';
+  for (const [id, previous] of [[linked, "Linked snapshot"], [undefined, undefined], [undefined, "Old text"]]) {
+    assert.equal(JSON.stringify(serializeParentChange(id, previous, null, " Historical sire ")),
+      JSON.stringify({ name: "Historical sire" }));
+  }
+  assert.equal(serializeParentChange(undefined, "Old text", null, ""), null);
+  assert.equal(serializeParentChange(undefined, "Old text", null, "Old text"), undefined);
+  assert.equal(serializeParentChange(linked, "Snapshot", linked, "Ignored"), undefined);
 });
 
 test("cloud-first activation is limited to development Preview hosts", async () => {

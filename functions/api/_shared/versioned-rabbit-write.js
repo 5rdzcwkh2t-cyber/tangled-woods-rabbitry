@@ -137,9 +137,12 @@ async function requestBody(request, mode) {
     if (Object.hasOwn(body, "parentChanges")) {
       const changes = body.parentChanges;
       if (!changes || typeof changes !== "object" || Array.isArray(changes)) throw new TypeError();
-      for (const [role, id] of Object.entries(changes)) {
+      for (const [role, change] of Object.entries(changes)) {
         if (!Object.hasOwn(parentRoles, role)) throw new TypeError();
-        if (id !== null) validateTypedRelationshipId(id, role);
+        if (change !== null && typeof change === "object") {
+          if (Array.isArray(change) || Object.keys(change).length !== 1 ||
+              typeof change.name !== "string" || !change.name.trim()) throw new TypeError();
+        } else if (change !== null) validateTypedRelationshipId(change, role);
       }
     }
   } catch {
@@ -165,12 +168,16 @@ async function applyParentChanges(env, input, previous = {}) {
   ).first();
   if (!guard) return reply({ error: "Versioned pedigree storage unavailable" }, 503);
 
-  for (const [role, id] of Object.entries(parentChanges)) {
+  for (const [role, change] of Object.entries(parentChanges)) {
     const field = `${role}TypedId`;
-    if (id === null) {
+    if (change === null) {
       delete record[field];
       delete record[role];
-    } else if (id !== previous[field]) {
+    } else if (typeof change === "object") {
+      delete record[field];
+      record[role] = change.name.trim();
+    } else if (change !== previous[field]) {
+      const id = change;
       if (id === encodeRabbitId(record._id)) return reply({ error: "Rabbit cannot be its own parent" }, 400);
       const row = await latestRow(env, rabbitryId, id);
       const parent = row && row.deleted_at === null ? validateStoredLatest(row).record : null;
@@ -385,7 +392,7 @@ export async function handleVersionedRabbitWrite({ request, env }, mode) {
         return reply({ error: "Kit relationships cannot be changed" }, 400);
       }
       for (const role of Object.keys(parentRoles)) {
-        if (previous.record[`${role}TypedId`] == null) continue;
+        if (previous.record[`${role}TypedId`] == null && Object.hasOwn(input.record, role)) continue;
         if (Object.hasOwn(previous.record, role)) input.record[role] = previous.record[role];
         else delete input.record[role];
       }

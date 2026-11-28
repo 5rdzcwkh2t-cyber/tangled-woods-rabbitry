@@ -96,6 +96,33 @@ async function pedigreeFixture(t, options) {
   return { ...fixture, create, update, remove };
 }
 
+test("historical parent names replace links, save without links, and survive unrelated revisions", async t => {
+  const { create, update } = await pedigreeFixture(t);
+  await json(await create(record("sire", "Linked snapshot", { Sex: "Buck" })), 201);
+  const created = await json(await create(record("child"), {
+    Father: encodeRabbitId("sire"), Mother: { name: " Historical dam " }
+  }), 201);
+  assert.equal(created.rabbit.envelope.record.Mother, "Historical dam");
+  const changed = await json(await update(created.rabbit.envelope.record, 0, {
+    Father: { name: " Historical sire " }, Mother: { name: "Corrected dam" }
+  }), 200);
+  const first = changed.rabbit.envelope.record;
+  assert.equal(first.Father, "Historical sire");
+  assert.equal(first.FatherTypedId, undefined);
+  assert.equal(first.Mother, "Corrected dam");
+  const preserved = await json(await update({ _id: "child", Name: "Unrelated edit" }, 1), 200);
+  assert.equal(preserved.rabbit.envelope.record.Father, "Historical sire");
+  assert.equal(preserved.rabbit.envelope.record.Mother, "Corrected dam");
+  const cleared = await json(await update(preserved.rabbit.envelope.record, 2, { Father: null }), 200);
+  assert.equal(cleared.rabbit.envelope.record.Father, undefined);
+  const entered = await json(await update(cleared.rabbit.envelope.record, 3, {
+    Father: { name: "Sire without a link" }
+  }), 200);
+  assert.equal(entered.rabbit.envelope.record.Father, "Sire without a link");
+  assert.equal(entered.rabbit.envelope.record.FatherTypedId, undefined);
+  await json(await update(entered.rabbit.envelope.record, 4, { Father: { name: " " } }), 400);
+});
+
 test("parent assignments snapshot names, preserve text-only ancestors, and can be corrected or cleared", async t => {
   const { create, update, remove, database } = await pedigreeFixture(t);
   const sire = record(7, "Old sire", { Sex: "Buck" });

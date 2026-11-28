@@ -68,7 +68,7 @@ test("pedigree GET scopes the request, rejects malformed trees and reports offli
 test("parent commands travel separately from records and keep useful conflict categories", async () => {
   const { client } = await loadClient();
   const record = item().envelope.record;
-  const changes = { Father: null, Mother: item("dam").typedId };
+  const changes = { Father: { name: "Historical sire" }, Mother: item("dam").typedId };
   await client.updateRabbit({ baseRevision: 0, record, parentChanges: changes, fetchImpl: async (_, init) => {
     assert.deepEqual(JSON.parse(init.body).parentChanges, changes);
     assert.deepEqual(JSON.parse(init.body).record, record);
