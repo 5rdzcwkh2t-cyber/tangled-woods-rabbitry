@@ -293,7 +293,7 @@
 
   function createSession(api, { compress = compressPhoto, makeId = () => crypto.randomUUID(),
     onChange = () => {}, onSnapshot = async () => {}, isCurrent = () => true,
-    journal, hash = photoHash, canCapture = () => false } = {}) {
+    journal, hash = photoHash } = {}) {
     let snapshot = null;
     let busy = false;
     let message = "";
@@ -302,8 +302,7 @@
     let reloadRequired = false;
     let recovery = null;
     let diagnostic = null;
-    const state = () => ({ snapshot, busy, message, progress, retry: !!batch && !batch.paused,
-      prepared: !!batch?.paused, recovery, reloadRequired, diagnostic });
+    const state = () => ({ snapshot, busy, message, progress, retry: !!batch, recovery, reloadRequired, diagnostic });
     const draw = () => { if (isCurrent()) onChange(state()); };
     const say = value => { message = value; draw(); };
     function report(data) {
@@ -374,18 +373,11 @@
             batch.pending = { action: batch.photoId ? "replace" : "add", baseRevision: snapshot.revision,
               ...(batch.photoId ? { photoId: batch.photoId } : {}), operationId, jpeg };
           }
-          if (!batch.receipt && (journal || batch.capture)) {
+          if (journal && !batch.receipt) {
             const { jpeg, ...operation } = batch.pending;
             batch.receipt = { ...operation, sha256: await hash(jpeg), remaining: batch.files.length - 1 };
           }
           if (!isCurrent()) break;
-          if (batch.capture && !batch.reviewed) {
-            batch.reviewed = true;
-            batch.paused = true;
-            report({ stage: "ready-to-save", sha256: batch.receipt.sha256 });
-            say("Save the prepared JPEG, then tap Send prepared JPEG to upload it.");
-            return;
-          }
           if (journal && batch.receipt) {
             try { journal.save(batch.receipt); }
             catch { throw requestError(0, "file", "Could not record upload recovery information. No upload was sent."); }
@@ -415,7 +407,6 @@
           batch.files.shift();
           batch.pending = null;
           batch.sent = false;
-          batch.reviewed = false;
           saved++;
           if (result.replayed) {
             reloadRequired = true;
@@ -483,7 +474,7 @@
         say(photoId ? "Choose one replacement for an existing photograph." : "A rabbit can have at most 10 photos.");
         return Promise.resolve(false);
       }
-      batch = { files: list, total: list.length, photoId, pending: null, capture: canCapture() };
+      batch = { files: list, total: list.length, photoId, pending: null };
       return perform(sendBatch);
     }
     function change(action, photoId) {
@@ -587,12 +578,7 @@
     }
     return { getState: state, load, uploadFiles, change,
       checkRecovery, cancelRecovery, recoverFile,
-      preparedJpeg: () => !busy && isCurrent() && batch?.paused ? batch.pending.jpeg : null,
-      sendPrepared: () => batch?.paused ? perform(() => {
-        batch.paused = false;
-        return sendBatch();
-      }) : Promise.resolve(false),
-      retry: () => batch?.pending && !batch.paused ? perform(sendBatch) : Promise.resolve(false) };
+      retry: () => batch?.pending ? perform(sendBatch) : Promise.resolve(false) };
   }
 
   window.twCloudRabbitPhotos = { createApi, createJournal, createSession, primaryPhotoUrl, photoDimensions,
@@ -612,10 +598,24 @@
     return element;
   }
 
-  function fileControl(text, { capture, multiple, change }) {
-    const label = node("label", text, "tw-cloud-photo-picker");
+  function iconButton(text, icon, click, iconOnly = false) {
+    const control = button(null, click);
+    const symbol = node("span", icon, "tw-cloud-photo-icon");
+    symbol.setAttribute("aria-hidden", "true");
+    control.append(symbol);
+    if (iconOnly) {
+      control.setAttribute("aria-label", text);
+      control.title = text;
+    } else {
+      control.append(node("span", text));
+    }
+    return control;
+  }
+
+  function fileControl(text, { capture, multiple, change, icon }) {
     const input = node("input");
     input.type = "file";
+    input.hidden = true;
     input.accept = "image/*";
     input.multiple = !!multiple;
     if (capture) input.setAttribute("capture", "environment");
@@ -624,8 +624,8 @@
       input.value = "";
       if (files.length) change(files);
     };
-    label.append(input);
-    return { label, input };
+    const picker = icon ? iconButton(text, icon, () => input.click()) : button(text, () => input.click());
+    return { picker, input };
   }
 
   function photograph(scope, id, alt, className) {
@@ -640,11 +640,16 @@
     const dialog = node("dialog", null, "tw-cloud-photo-dialog");
     const imageSlot = node("div", null, "tw-cloud-photo-view-image");
     const caption = node("p", null, "muted");
+    caption.setAttribute("aria-live", "polite");
     const controls = node("div", null, "tw-cloud-photo-actions");
     const close = button("Close", () => dialog.close());
-    const step = delta => { index = (index + delta + photos.length) % photos.length; update(); };
-    const previous = button("Previous", () => step(-1));
-    const next = button("Next", () => step(1));
+    const step = delta => {
+      if (photos.length < 2) return;
+      index = (index + delta + photos.length) % photos.length;
+      update();
+    };
+    const previous = iconButton("Previous photo", "←", () => step(-1), true);
+    const next = iconButton("Next photo", "→", () => step(1), true);
     previous.disabled = next.disabled = photos.length < 2;
     function update() {
       caption.textContent = `Photo ${index + 1} of ${photos.length}`;
@@ -657,6 +662,20 @@
         step(event.key === "ArrowRight" ? 1 : -1);
       }
     });
+    let touchStart;
+    imageSlot.addEventListener("touchstart", event => {
+      touchStart = event.touches.length === 1 ? event.touches[0] : null;
+    }, { passive: true });
+    imageSlot.addEventListener("touchcancel", () => { touchStart = null; });
+    imageSlot.addEventListener("touchend", event => {
+      const end = event.changedTouches[0];
+      if (touchStart && end?.identifier === touchStart.identifier && !event.touches.length) {
+        const dx = end.clientX - touchStart.clientX;
+        const dy = end.clientY - touchStart.clientY;
+        if (Math.abs(dx) >= 48 && Math.abs(dx) > Math.abs(dy) * 1.5) step(dx < 0 ? 1 : -1);
+      }
+      touchStart = null;
+    }, { passive: true });
     dialog.addEventListener("close", () => {
       dialog.remove();
       if (trigger.isConnected) trigger.focus();
@@ -669,7 +688,7 @@
     close.focus();
   }
 
-  function mount(panel, entry, { onSnapshot, onBusy = () => {}, developmentDiagnostics = false } = {}) {
+  function mount(panel, entry, { onSnapshot, onBusy = () => {} } = {}) {
     const scope = entry.metadata;
     const heading = node("h3", "Cloud photographs");
     const status = node("p", "", "tw-gallery-status");
@@ -677,11 +696,10 @@
     const progress = node("progress");
     progress.setAttribute("aria-label", "Photo upload progress");
     progress.max = 1;
-    const hero = node("div");
     const grid = node("div", null, "tw-gallery-grid");
     const controls = node("div", null, "tw-cloud-photo-actions");
-    const take = fileControl("Take photo", { capture: true, change: files => session.uploadFiles(files) });
-    const choose = fileControl("Choose photos", { multiple: true, change: files => session.uploadFiles(files) });
+    const take = fileControl("Take Photo", { icon: "📷", capture: true, change: files => session.uploadFiles(files) });
+    const choose = fileControl("Choose Photos", { icon: "📁", multiple: true, change: files => session.uploadFiles(files) });
     const retry = button("Retry upload", () => session.retry());
     const check = button("Check prior upload", () => session.checkRecovery());
     const cancel = button("Cancel pending upload", () => {
@@ -693,66 +711,23 @@
     const reload = button("Reload gallery", () => {
       if (!session.getState().retry || window.confirm("Reload and keep the pending upload receipt? You may need to reselect the original photo.")) session.load();
     });
-    controls.append(take.label, choose.label, retry, check, cancel, recover.label, reload);
+    controls.append(take.picker, take.input, choose.picker, choose.input, retry, check, cancel,
+      recover.picker, recover.input, reload);
     const diagnostics = node("details");
     const report = node("pre");
     report.style.whiteSpace = "pre-wrap";
     report.style.overflowWrap = "anywhere";
     diagnostics.append(node("summary", "Upload diagnostics"), report);
-    const capture = node("input");
-    capture.type = "checkbox";
-    const captureLabel = node("label", "Pause before upload to save the prepared JPEG (development)");
-    captureLabel.append(capture);
-    const filename = () => `prepared-${session.getState().diagnostic.operationId}.jpg`;
-    const share = button("Share prepared JPEG", async () => {
-      const jpeg = session.preparedJpeg();
-      if (!jpeg) return;
-      const files = [new File([jpeg], filename(), { type: "image/jpeg" })];
-      try {
-        if (!navigator.canShare?.({ files })) throw new Error();
-        await navigator.share({ files });
-      } catch (error) {
-        if (error?.name !== "AbortError") status.textContent = "Use Download prepared JPEG to save a copy.";
-      }
-    });
-    const download = button("Download prepared JPEG", () => {
-      const jpeg = session.preparedJpeg();
-      if (!jpeg) return;
-      const url = URL.createObjectURL(jpeg);
-      const link = node("a");
-      link.href = url;
-      link.download = filename();
-      panel.append(link);
-      link.click();
-      link.remove();
-      setTimeout(() => URL.revokeObjectURL(url), 30_000);
-    });
-    const send = button("Send prepared JPEG", () => session.sendPrepared());
-    const verify = fileControl("Verify saved JPEG", { change: async ([file]) => {
-      const jpeg = session.preparedJpeg();
-      if (!jpeg) return;
-      const expected = session.getState().diagnostic.sha256;
-      try {
-        const matches = file.size === jpeg.size && await photoHash(file) === expected;
-        if (session.preparedJpeg() === jpeg) status.textContent = matches
-          ? "Saved JPEG SHA-256 matches the upload body."
-          : "Saved JPEG differs from the upload body. Try Download prepared JPEG.";
-      } catch {
-        if (session.preparedJpeg() === jpeg) status.textContent = "Could not read the saved JPEG.";
-      }
-    } });
-    if (developmentDiagnostics) diagnostics.append(captureLabel, share, download, verify.label, send);
     panel.className = "tw-gallery tw-cloud-photo-gallery";
-    panel.append(heading, status, progress, hero, controls, diagnostics, grid);
+    panel.append(heading, status, progress, controls, grid, diagnostics);
     let renderedGallery;
     let lastBusy = false;
     const session = createSession(createApi(scope), {
-      onSnapshot, journal: createJournal(scope), isCurrent: () => panel.isConnected, onChange: draw,
-      canCapture: () => developmentDiagnostics && capture.checked
+      onSnapshot, journal: createJournal(scope), isCurrent: () => panel.isConnected, onChange: draw
     });
     function draw(state) {
       const gallery = state.snapshot?.gallery;
-      const disabled = state.busy || state.reloadRequired || state.retry || state.prepared || state.recovery || !gallery;
+      const disabled = state.busy || state.reloadRequired || state.retry || state.recovery || !gallery;
       if (lastBusy !== state.busy) { lastBusy = state.busy; onBusy(state.busy); }
       status.textContent = state.message;
       progress.hidden = state.progress === null;
@@ -761,37 +736,40 @@
       retry.disabled = state.busy;
       cancel.hidden = !state.recovery && !state.retry;
       cancel.disabled = state.busy;
-      check.hidden = recover.label.hidden = !state.recovery || state.retry;
-      check.disabled = recover.input.disabled = state.busy;
+      check.hidden = recover.picker.hidden = !state.recovery || state.retry;
+      check.disabled = recover.picker.disabled = recover.input.disabled = state.busy;
       reload.disabled = state.busy;
-      diagnostics.hidden = !state.diagnostic && !(developmentDiagnostics && gallery && !state.reloadRequired);
-      captureLabel.hidden = !gallery || state.reloadRequired;
-      capture.disabled = disabled;
-      share.hidden = download.hidden = verify.label.hidden = send.hidden = !state.prepared;
-      share.disabled = download.disabled = verify.input.disabled = send.disabled = state.busy;
+      diagnostics.hidden = !state.diagnostic;
       if (state.diagnostic) report.textContent = JSON.stringify(state.diagnostic, null, 2);
-      take.input.disabled = choose.input.disabled = disabled || gallery.photos.length >= LIMIT;
+      take.picker.disabled = take.input.disabled = choose.picker.disabled = choose.input.disabled =
+        disabled || gallery.photos.length >= LIMIT;
       if (renderedGallery !== gallery && gallery) {
         renderedGallery = gallery;
-        hero.replaceChildren();
         grid.replaceChildren();
         const { photos, primaryId } = gallery;
-        if (primaryId) hero.append(photograph(scope, primaryId, "Primary rabbit photograph", "tw-gallery-main"));
         photos.forEach((photo, index) => {
           const tile = node("div", null, "tw-gallery-tile");
-          const view = button(`View photo ${index + 1}`, () => openViewer(panel, scope, photos, index, view));
+          const view = button(null, () => openViewer(panel, scope, photos, index, view));
+          view.setAttribute("aria-label", `View photo ${index + 1}`);
           view.className = "tw-cloud-photo-thumb";
           view.append(photograph(scope, photo.id, ""));
-          const replace = fileControl("Replace", { change: files => session.uploadFiles(files, photo.id) });
-          const remove = button("Remove", () => {
-            if (window.confirm("Remove this photograph from the current gallery?")) session.change("remove", photo.id);
-          });
-          tile.append(view, photo.id === primaryId ? node("p", "Primary")
-            : button("Make primary", () => session.change("primary", photo.id)), replace.label, remove);
+          const actions = node("div", null, "tw-cloud-photo-tile-actions");
+          const isPrimary = photo.id === primaryId;
+          const primary = iconButton(`Select photo ${index + 1} as primary`, isPrimary ? "★" : "☆", () => {
+            if (!isPrimary) session.change("primary", photo.id);
+          }, true);
+          primary.setAttribute("aria-pressed", String(isPrimary));
+          const remove = iconButton(`Remove photo ${index + 1}`, "🗑", () => {
+            if (!session.getState().busy && window.confirm("Remove this photograph from the current gallery?")) {
+              session.change("remove", photo.id);
+            }
+          }, true);
+          actions.append(primary, remove);
+          tile.append(view, actions);
           grid.append(tile);
         });
       }
-      for (const control of grid.querySelectorAll("button:not(.tw-cloud-photo-thumb), input")) control.disabled = disabled;
+      for (const control of grid.querySelectorAll(".tw-cloud-photo-tile-actions button")) control.disabled = disabled;
     }
     draw(session.getState());
     session.load();

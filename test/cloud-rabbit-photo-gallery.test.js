@@ -277,7 +277,7 @@ test("navigating away during compression prevents subsequent upload", async () =
   assert.equal(uploads, 0);
 });
 
-test("mounted gallery exposes separate camera and multi-select inputs and keyboard viewer navigation", async () => {
+test("mounted gallery exposes camera and multi-select buttons and accessible viewer navigation", async () => {
   class Element {
     constructor(tag) {
       this.tag = tag; this.children = []; this.attributes = {}; this.listeners = {};
@@ -288,6 +288,7 @@ test("mounted gallery exposes separate camera and multi-select inputs and keyboa
     setAttribute(name, value) { this.attributes[name] = value; }
     addEventListener(name, listener) { this.listeners[name] = listener; }
     focus() { this.focused = true; }
+    click() { this.clicked = true; }
     showModal() { this.open = true; }
     close() { this.open = false; this.listeners.close(); }
     remove() { this.parent.children = this.parent.children.filter(child => child !== this); this.isConnected = false; }
@@ -297,7 +298,9 @@ test("mounted gallery exposes separate camera and multi-select inputs and keyboa
         (child.tag === "button" && child.className !== "tw-cloud-photo-thumb"));
     }
   }
+  const confirmations = [];
   const { mount } = load({
+    window: { confirm: message => { confirmations.push(message); return false; } },
     document: { createElement: tag => new Element(tag) },
     fetch: async url => ({ status: 200, url: origin + url, text: async () => JSON.stringify(result(3, [id(1), id(2)])) })
   });
@@ -305,19 +308,33 @@ test("mounted gallery exposes separate camera and multi-select inputs and keyboa
   mount(panel, { metadata: scope });
   await new Promise(resolve => setImmediate(resolve));
   const control = text => panel.descendants().find(item => item.textContent === text);
-  const take = control("Take photo").children[0];
-  const choose = control("Choose photos").children[0];
+  const controls = panel.descendants();
+  const [take, choose] = controls.filter(element => element.tag === "input");
+  control("Take Photo").parent.onclick();
+  control("Choose Photos").parent.onclick();
+  assert.equal(take.clicked, true);
+  assert.equal(choose.clicked, true);
   assert.equal(take.attributes.capture, "environment");
   assert.equal(take.multiple, false);
   assert.equal(choose.attributes.capture, undefined);
   assert.equal(choose.multiple, true);
-  assert.equal(control("Replace").children[0].multiple, false);
-  const view = control("View photo 1");
+  assert.equal(control("Replace"), undefined);
+  assert.equal(control("Download prepared JPEG"), undefined);
+  assert.equal(controls.find(item => item.attributes["aria-label"] === "Select photo 1 as primary").attributes["aria-pressed"], "true");
+  controls.find(item => item.attributes["aria-label"] === "Remove photo 1").onclick();
+  assert.deepEqual(confirmations, ["Remove this photograph from the current gallery?"]);
+  const view = controls.find(item => item.attributes["aria-label"] === "View photo 1");
   view.onclick();
   const dialog = panel.children.find(child => child.tag === "dialog");
   assert.equal(dialog.open, true);
   assert.ok(control("Photo 1 of 2"));
   dialog.listeners.keydown({ key: "ArrowRight", preventDefault() {} });
+  assert.ok(control("Photo 2 of 2"));
+  dialog.descendants().find(item => item.attributes["aria-label"] === "Previous photo").onclick();
+  assert.ok(control("Photo 1 of 2"));
+  const slot = dialog.children[0];
+  slot.listeners.touchstart({ touches: [{ identifier: 1, clientX: 150, clientY: 50 }] });
+  slot.listeners.touchend({ touches: [], changedTouches: [{ identifier: 1, clientX: 60, clientY: 55 }] });
   assert.ok(control("Photo 2 of 2"));
   control("Close").onclick();
   assert.equal(dialog.isConnected, false);
@@ -537,7 +554,7 @@ test("cancel recovery confirms a completed upload and retains the committed imag
   assert.equal(journal.list().length, 0);
 });
 
-test("development capture pauses before persistence or upload and sends the same hashed Blob", async () => {
+test("uploads journal the prepared Blob hash and expose only sanitized rejection details", async () => {
   const { createApi, createSession, createJournal } = load({ crypto: webcrypto });
   const storage = storageFixture();
   const journal = createJournal(scope, () => storage);
@@ -547,25 +564,18 @@ test("development capture pauses before persistence or upload and sends the same
     fetchImpl: async url => ({ status: 200, url: origin + url, text: async () => JSON.stringify(result(4)) }),
     upload: async (url, body) => {
       sent = body;
+      const digest = createHash("sha256").update(Buffer.from(await body.arrayBuffer())).digest("hex");
+      assert.equal(journal.list()[0].sha256, digest);
       return { status: 415, url: origin + url,
         text: JSON.stringify({ outcome: "rejected", code: "jpeg_marker", error: "private detail",
           detail: { reason: "disallowed_marker", marker: "FFE1", payload: "private metadata" } }) };
     }
   });
-  const session = createSession(api, { journal, canCapture: () => true,
+  const session = createSession(api, { journal,
     makeId: () => operationId, compress: async () => jpeg });
   await session.load();
   await session.uploadFiles([jpeg]);
-  assert.equal(sent, undefined);
-  assert.equal(journal.list().length, 0);
-  assert.equal(await session.retry(), false);
-  assert.equal(await session.cancelRecovery(), false);
-  assert.equal(session.preparedJpeg(), jpeg);
-  const digest = createHash("sha256").update(Buffer.from(await jpeg.arrayBuffer())).digest("hex");
-  assert.equal(session.getState().diagnostic.sha256, digest);
-  await session.sendPrepared();
   assert.equal(sent, jpeg);
-  assert.equal(session.preparedJpeg(), null);
   assert.equal(journal.list().length, 0);
   assert.equal(session.getState().diagnostic.rejectionCode, "jpeg_marker");
   assert.deepEqual({ ...session.getState().diagnostic.rejectionDetail }, { reason: "disallowed_marker", marker: "FFE1" });
